@@ -5,6 +5,19 @@ const state = {
   chats: new Map(), active: null, messages: [], statuses: {}, pending: [], search: '',
   downloading: new Set(), loadingOlder: false, modalShown: false, filter: null,
 };
+let icons = {};
+try { icons = JSON.parse(localStorage.getItem('icons') || '{}'); } catch { icons = {}; }
+let avatars = {}; // profile pictures of the web chats (data URLs), remembered between runs
+try { avatars = JSON.parse(localStorage.getItem('avatars') || '{}'); } catch { avatars = {}; }
+let avatarSave = null;
+function saveAvatars() {
+  clearTimeout(avatarSave);
+  avatarSave = setTimeout(() => {
+    const keys = Object.keys(avatars);
+    if (keys.length > 300) for (const k of keys.slice(0, keys.length - 300)) delete avatars[k];
+    try { localStorage.setItem('avatars', JSON.stringify(avatars)); } catch { /* storage full */ }
+  }, 2000);
+}
 const SOURCE = { tg: 'Telegram', wa: 'WhatsApp', ei: 'Eitaa', ba: 'Bale', ru: 'Rubika' };
 
 // ---------- helpers ----------
@@ -35,13 +48,23 @@ function dayLabel(ts) {
   return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
 }
 function hue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+// Logos: Telegram and WhatsApp are the marks drawn in the rail, the others use the icon read from their own page.
+const logoPath = (k) => { const p = document.querySelector(`.rail-btn[data-svc="${k}"] .logo svg path`); return p ? p.getAttribute('d') : ''; };
+function badgeHtml(base, second) {
+  const d = (base === 'tg' || base === 'wa') ? logoPath(base) : '';
+  const letter = { tg: 'T', wa: 'W', ei: 'E', ba: 'B', ru: 'R' }[base] || '?';
+  const inner = d ? `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>` : icons[base] ? `<img src="${esc(icons[base])}" alt="">` : letter;
+  return inner + (second ? '<i>2</i>' : '');
+}
 function avatar(chat, extra = '') {
   const initials = (chat.title || '?').trim().split(/\s+/).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase() || '?';
   const base = chat.source.replace(/2$/, '');
   const second = base !== chat.source;
-  const src = ({ tg: 'T', wa: 'W', ei: 'E', ba: 'B', ru: 'R' }[base] || '?') + (second ? '2' : '');
-  return `<div class="avatar ${extra}" style="background:hsl(${hue(chat.id)} 45% 42%)">${esc(initials)}<span class="src ${base} ${second ? 'second' : ''}">${src}</span></div>`;
+  const photo = chat.avatar ? `<img class="ph" src="${esc(chat.avatar)}" alt="">` : '';
+  return `<div class="avatar ${extra}" style="background:hsl(${hue(chat.id)} 45% 42%)">${esc(initials)}${photo}<span class="src ${base} ${second ? 'second' : ''}">${badgeHtml(base, second)}</span></div>`;
 }
+// a picture that cannot be shown falls back to the initials
+document.addEventListener('error', (e) => { if (e.target && e.target.classList && e.target.classList.contains('ph')) e.target.remove(); }, true);
 const PIN = '<svg class="pin" viewBox="0 0 24 24"><path d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5a3 3 0 0 1-2 2.8V13h5v7l1 2 1-2v-7h5v-1.2A3 3 0 0 1 16 9z"/></svg>';
 
 let toastTimer;
@@ -169,7 +192,7 @@ function renderList() {
     chats.forEach((c, i) => {
       if (wasPinned && !c.pinned) html += '<div class="divider"></div>';
       wasPinned = c.pinned;
-      const last = c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText);
+      const last = (c.archived ? '<span class="arc">Archived</span>' : '') + (c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText));
       html += `<div class="chat-item ${c.id === state.active ? 'active' : ''}" data-id="${esc(c.id)}">
         ${avatar(c)}
         <div class="c-body">
@@ -183,23 +206,23 @@ function renderList() {
 }
 
 // ---------- "All": every messenger in one list, newest first ----------
-const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
+const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika'], ['arc', 'Archived']];
 state.feedFilter = 'all';
 
 function renderFeed() {
   const base = (c) => c.source.replace(/2$/, '');
   const all = sortedChats(false);
   $('#feedTabs').innerHTML = FEED_TABS.map(([k, label]) => {
-    const list = k === 'all' ? all : all.filter((c) => base(c) === k);
+    const list = k === 'all' ? all : k === 'arc' ? all.filter((c) => c.archived) : all.filter((c) => base(c) === k);
     const unread = list.reduce((n, c) => n + (c.unread || 0), 0);
     return `<button class="feed-tab ${state.feedFilter === k ? 'active' : ''}" data-f="${k}">${label}<span class="n">${list.length}</span>${unread ? `<span class="u">${unread}</span>` : ''}</button>`;
   }).join('');
-  const chats = state.feedFilter === 'all' ? all : all.filter((c) => base(c) === state.feedFilter);
+  const chats = state.feedFilter === 'all' ? all : state.feedFilter === 'arc' ? all.filter((c) => c.archived) : all.filter((c) => base(c) === state.feedFilter);
   let html = '', lastLabel = null;
   for (const c of chats) {
     const label = c.pinned ? 'Pinned' : c.approx ? 'Earlier' : dayLabel(c.lastTs);
     if (label !== lastLabel) { html += `<div class="day">${esc(label)}</div>`; lastLabel = label; }
-    const last = c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText);
+    const last = (c.archived ? '<span class="arc">Archived</span>' : '') + (c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText));
     html += `<div class="chat-item" data-id="${esc(c.id)}">${avatar(c)}<div class="c-body">
       <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
       <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : c.pinned ? PIN : ''}</div></div></div>`;
@@ -270,7 +293,7 @@ async function openChat(id) {
     $('#chatView').hidden = true;
     markRail(web.source);
     renderList();
-    return guard(api.openWebChat(web.source, web.title, web.n));
+    return guard(api.openWebChat(web.source, web.title, web.n, !!web.archived));
   }
   state.active = id;
   state.pending = [];
@@ -600,15 +623,15 @@ api.onWebChats(({ key, chats }) => {
     seen.set(c.title, n + 1);
     const { ts, exact } = webTimestamp(c.time, rank);
     const id = `${key}:${c.title}#${n}`;
-    state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, approx: !exact, timeText: c.time, unread: c.unread, pinned: false });
+    const av = `${key}:${c.title}`;
+    if (c.avatar) { avatars[av] = c.avatar; saveAvatars(); }
+    state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, approx: !exact, timeText: c.time, unread: c.unread, pinned: false, archived: !!c.archived, avatar: avatars[av] || '' });
     applyPin(state.chats.get(id));
   });
   renderList();
 });
 
-// Logos of Eitaa, Bale and Rubika: the favicon of each service's own page, remembered between runs.
-let icons = {};
-try { icons = JSON.parse(localStorage.getItem('icons') || '{}'); } catch { icons = {}; }
+// Logos of Eitaa, Bale and Rubika: the icon of each service's own page, remembered between runs.
 function applyIcon(key, url) {
   document.querySelectorAll(`.rail-btn[data-svc="${key}"] .logo img, .rail-btn[data-svc="${key}2"] .logo img`).forEach((img) => {
     img.onerror = () => { img.hidden = true; };
@@ -617,13 +640,17 @@ function applyIcon(key, url) {
   });
 }
 for (const [k, u] of Object.entries(icons)) applyIcon(k, u);
-api.onWebIcon(({ key, url }) => {
+function setIcon(key, url) {
   const base = key.replace(/2$/, '');
-  if (!['ei', 'ba', 'ru'].includes(base)) return; // Telegram and WhatsApp keep their own logos
+  if (!url || !['ei', 'ba', 'ru'].includes(base)) return; // Telegram and WhatsApp keep their own logos
   icons[base] = url;
   try { localStorage.setItem('icons', JSON.stringify(icons)); } catch { /* storage unavailable */ }
   applyIcon(base, url);
-});
+  renderList();
+}
+api.onWebIcon(({ key, url }) => setIcon(key, url));
+// icons the main process already fetched before this window was ready
+api.webIcons().then((all) => { for (const [k, u] of Object.entries(all || {})) setIcon(k, u); }).catch(() => {});
 
 $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
 

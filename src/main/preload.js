@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('messenger', {
   openWebChat: invoke('web:open'),
   onWebChats: on('web:chats'),
   onWebIcon: on('web:icon'),
+  webIcons: invoke('web:icons'),
   accounts: invoke('web:accounts'),
   setAccount: invoke('web:account'),
   onAccounts: on('web:accounts'),

@@ -151,3 +151,12 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 .svc-row .name small { display: block; font-weight: 400; color: var(--muted); }
 .svc-row .btn { padding: 5px 12px; }
 .svc-row.second { padding-left: 26px; }
+
+/* profile pictures, logo badges, archive tag */
+.avatar { overflow: visible; }
+.avatar img.ph { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.avatar .src { z-index: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.avatar .src svg { width: 10px; height: 10px; fill: #fff; }
+.avatar .src img { width: 100%; height: 100%; object-fit: cover; background: #fff; }
+.avatar .src i { font: 700 8px/1 system-ui, sans-serif; font-style: normal; margin-left: 1px; }
+.arc { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 8px; background: var(--hover); color: var(--muted); font-size: 11px; font-weight: 600; }

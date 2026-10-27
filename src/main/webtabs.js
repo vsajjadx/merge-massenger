@@ -20,6 +20,15 @@ const REAL_CLICK = new Set(['ru']); // services that ignore clicks made by the p
 const RAIL = 56;      // service rail, px
 const SIDEBAR = 340;  // unified chat list, px (same as #sidebar in styles.css)
 const POLL_MS = 3000;
+const ARCHIVE_MS = 40000; // how often the archived chats of each service are read
+const ICON_SERVICES = new Set(['ei', 'ba', 'ru']); // services whose logo is taken from their own page
+
+// Runs inside a web client: turns a blob/data picture address into a small data URL.
+const TO_DATA = async function (src) {
+  const b = await (await fetch(src)).blob();
+  if (!b.size || b.size > 150000) return null;
+  return await new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.onerror = () => r(null); f.readAsDataURL(b); });
+}.toString();
 const PERMISSIONS = new Set(['notifications', 'media', 'fullscreen', 'clipboard-sanitized-write']);
 
 const OUTLINE = function () {
@@ -62,14 +71,22 @@ const LIB = function (op, arg) {
   const norm = (s) => String(s || '').replace(/[۰-۹]/g, (d) => FA.indexOf(d)).replace(/[٠-٩]/g, (d) => AR.indexOf(d)).replace(/\s+/g, ' ').trim();
   const MON = '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?';
   const TIME = new RegExp('^(\\d{1,2}:\\d{2}(\\s?[ap]m)?|\\d{1,4}[\\/.\\-]\\d{1,2}([\\/.\\-]\\d{1,4})?|' + MON + '\\s\\d{1,2}(,?\\s\\d{2,4})?|\\d{1,2}\\s' + MON + '(\\s\\d{2,4})?|yesterday|today|mon|tue|wed|thu|fri|sat|sun|دیروز|امروز|شنبه|یکشنبه|دوشنبه|سه‌?شنبه|چهارشنبه|پنج‌?شنبه|جمعه)$', 'i');
+  // the "Archived" entry of a chat list (not a chat: it is never listed with the chats)
+  const ARCH_RE = /^(archived( chats)?|archive|آرشیو( شده)?|بایگانی( شده)?)(\s?\d{1,4})?$/i;
   const EDIT = '[contenteditable]:not([contenteditable="false"]), textarea, [role="textbox"]';
 
   // Telegram-style clients (Telegram, Eitaa, Rubika) have .peer-title rows; for every other client the
   // chat list is the column whose children are many similar rows.
   function rows() {
+    // Telegram Web K shows the archive as its own tab (#chats-archived-container) on top of the main list:
+    // rows inside it are archived chats, rows outside it are the normal ones.
+    const ARC = document.querySelector('#chats-archived-container');
+    const wantArc = !!(arg && arg.archived);
     const known = [...document.querySelectorAll('.chatlist-chat, #chatlist-container ul.chatlist > li, #folders-container ul.chatlist > li')]
-      .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'));
-    if (known.length) return known;
+      .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'))
+      .filter((el) => !ARC || ARC.contains(el) === wantArc);
+    if (wantArc && !ARC && document.querySelector('archive-dialog')) return []; // archive not opened yet
+    if (known.length || ARC) return known;
     let best = null;
     for (const p of document.querySelectorAll('div, ul, section')) {
       const kids = p.children;
@@ -84,14 +101,22 @@ const LIB = function (op, arg) {
       if (kh < 40 || kh > 150) continue;
       if (!best || kids.length > best.children.length) best = p;
     }
-    return best ? [...best.children] : [];
+    return best ? [...best.children].filter((el) => !ARCH_RE.test(norm(el.innerText || el.textContent))) : [];
   }
+
+  // The picture of the chat: the address of the avatar image inside the row (the main process turns it into a small data URL).
+  const avatarOf = (row) => {
+    const bad = '.peer-title, .user-last-message, .message-time';
+    const imgs = [...row.querySelectorAll('img')].filter((i) => !i.closest(bad) && (i.currentSrc || i.src) && !/emoji|sticker|reaction/i.test(i.className));
+    const best = imgs.find((i) => i.closest('[class*="avatar" i], avatar-element')) || imgs.find((i) => (i.clientWidth || i.width) >= 30);
+    return best ? (best.currentSrc || best.src) : '';
+  };
 
   function parse(row) {
     if (row.querySelector('.peer-title')) {
       const q = (s) => norm((row.querySelector(s) || {}).textContent);
       const title = q('.peer-title');
-      return title ? { title, last: q('.user-last-message'), time: q('.message-time'), unread: parseInt(q('.dialog-subtitle-badge')) || 0 } : null;
+      return title ? { title, last: q('.user-last-message'), time: q('.message-time'), unread: parseInt(q('.dialog-subtitle-badge')) || 0, avatar: avatarOf(row) } : null;
     }
     const texts = [];
     const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
@@ -103,7 +128,7 @@ const LIB = function (op, arg) {
     const i = texts.findIndex((t) => TIME.test(t));
     if (i >= 0) time = texts.splice(i, 1)[0];
     if (texts.length > 1 && /^\d{1,3}\+?$/.test(texts[texts.length - 1])) unread = parseInt(texts.pop());
-    return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread };
+    return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread, avatar: avatarOf(row) };
   }
 
   // Where the click starts. The page's own click handler often sits on an inner element of the row, so an
@@ -238,6 +263,56 @@ const LIB = function (op, arg) {
     return !!(list && composer(list));
   }
 
+  // ----- archive: the archived chats are not part of the page's normal list, they sit behind an "Archived" entry -----
+  const press = (el) => {
+    const r = el.getBoundingClientRect();
+    const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, detail: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const init = { ...base, buttons: t.endsWith('down') ? 1 : 0 };
+      el.dispatchEvent(t.startsWith('pointer') ? new PointerEvent(t, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }) : new MouseEvent(t, init));
+    }
+  };
+  function archiveEntryEl() {
+    const k = document.querySelector('archive-dialog');
+    if (k) return k;
+    for (const el of document.querySelectorAll('[role="button"], button, [role="listitem"], li, a, div')) {
+      if (el.children.length > 6 || el.closest('[contenteditable], #chats-archived-container')) continue;
+      const t = norm(el.innerText || el.textContent);
+      if (!t || t.length > 40 || !ARCH_RE.test(t)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 100 || r.height < 24 || r.height > 120 || r.left > innerWidth * 0.5 || r.top > innerHeight * 0.7) continue;
+      return el;
+    }
+    return null;
+  }
+  function insideArchive() {
+    if (document.querySelector('#chats-archived-container')) return true;
+    if (document.querySelector('archive-dialog') || archiveEntryEl()) return false;
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n, c = 0; (n = w.nextNode()) && c < 4000; c++) {
+      const t = norm(n.textContent);
+      if (!t || !ARCH_RE.test(t) || !n.parentElement) continue;
+      const r = n.parentElement.getBoundingClientRect();
+      if (r.width > 0 && r.top >= 0 && r.top < 110 && r.left < innerWidth * 0.5) return true;
+    }
+    return false;
+  }
+  if (op === 'archiveEntry') return !!archiveEntryEl();
+  if (op === 'archiveInside') return insideArchive();
+  if (op === 'archiveClick') { const el = archiveEntryEl(); if (!el) return false; press(el); return true; }
+  if (op === 'archiveClose') {
+    const btn = document.querySelector('#chats-archived-container .sidebar-close-button');
+    if (btn) { press(btn); return true; }
+    const back = [...document.querySelectorAll('[aria-label], [data-icon], [data-testid]')].find((e) => {
+      const r = e.getBoundingClientRect();
+      const s = (e.getAttribute('aria-label') || '') + ' ' + (e.dataset.icon || '') + ' ' + (e.dataset.testid || '');
+      return r.width > 0 && r.top < 110 && r.left < innerWidth * 0.5 && /back|بازگشت|برگشت/i.test(s);
+    });
+    if (back) { press(back.closest('button, [role="button"]') || back); return true; }
+    for (const t of ['keydown', 'keyup']) (document.activeElement || document.body).dispatchEvent(new KeyboardEvent(t, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+    return false;
+  }
+
   const items = rows().map((el) => ({ el, chat: parse(el) })).filter((x) => x.chat).slice(0, 80);
   if (op === 'list') return items.map((x) => x.chat);
   const hits = items.filter((x) => x.chat.title === arg.title);
@@ -282,6 +357,18 @@ class WebTabs {
     this.busy = new Map();    // services with a chat being opened right now: the poll leaves their layout alone
     this.timer = null;
     this.hadChats = new Set(); // services whose chat list has been read at least once this session
+    this.polling = false;
+    this.fails = new Map();        // consecutive failed reads per service
+    this.empty = new Map();        // consecutive empty reads per service (after chats had been seen)
+    this.loadingSince = new Map(); // since when a page has been "loading"
+    this.reloaded = new Map();     // last automatic reload per service
+    this.archived = new Map();     // key -> archived chats read last
+    this.arcMiss = new Map();
+    this.nextArchive = new Map();
+    this.archiveBusy = new Set();  // services whose archive is open right now (for a scan)
+    this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
+    this.sentAvatar = new Map();   // key|title -> address of the picture last sent to the window
+    this.icons = new Map();        // logo (data URL) of Eitaa, Bale, Rubika
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -327,10 +414,19 @@ class WebTabs {
     view.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
     view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
     // The chat list of a page that finished loading is read soon, not after the next 3 s tick.
-    view.webContents.on('did-finish-load', () => { setTimeout(() => this.poll(), 1500); setTimeout(() => this.poll(), 5000); });
+    view.webContents.on('did-finish-load', () => {
+      setTimeout(() => this.poll(), 1500); setTimeout(() => this.poll(), 5000);
+      setTimeout(() => this.grabIcon(key).catch(() => {}), 3000);
+    });
     view.webContents.on('page-favicon-updated', (_e, icons) => {
-      const url = (icons || []).filter((u) => /^https:/i.test(u)).pop();
-      if (url) this.onIcon(key, url);
+      const url = (icons || []).filter((u) => /^https?:/i.test(u)).pop();
+      if (url) this.grabIcon(key, url).catch(() => {});
+    });
+    // A page that crashed, hangs or lost its connection is reloaded instead of staying dead until the app is restarted.
+    view.webContents.on('render-process-gone', () => setTimeout(() => this.reload(key, 'crashed', true), 2000));
+    view.webContents.on('unresponsive', () => setTimeout(() => { if (!view.webContents.isDestroyed()) this.reload(key, 'unresponsive'); }, 20000));
+    view.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => {
+      if (isMainFrame && code !== -3) setTimeout(() => this.reload(key, 'load failed', true), 15000);
     });
     this.files.attach(key, view.webContents, ses);
     this.win.contentView.addChildView(view);
@@ -343,18 +439,168 @@ class WebTabs {
     return view;
   }
 
+  // Runs one LIB operation in the page; gives up after `ms` so that one stuck page cannot block the others.
+  js(wc, op, arg, ms = 6000) {
+    let timer;
+    const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms); });
+    return Promise.race([wc.executeJavaScript(`(${LIB})(${JSON.stringify(op)}, ${JSON.stringify(arg || null)})`), limit]).finally(() => clearTimeout(timer));
+  }
+
+  reload(key, why, force = false) {
+    const view = this.views.get(key);
+    if (!view || view.webContents.isDestroyed()) return;
+    const last = this.reloaded.get(key) || 0;
+    if (!force && Date.now() - last < 60000) return;
+    this.reloaded.set(key, Date.now());
+    this.fails.set(key, 0); this.empty.set(key, 0);
+    this.archiveBusy.delete(key);
+    view.webContents.reload();
+  }
+
   async poll() {
-    for (const [key, view] of this.views) {
-      if (view.webContents.isDestroyed() || view.webContents.isLoading()) continue;
-      // The page may re-render and drop the moved column: keep it out of the way while a chat is open.
-      if (this.focused.has(key) && !this.busy.get(key)) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
-      let chats = [];
-      try { chats = (await view.webContents.executeJavaScript(`(${LIB})('list')`)) || []; } catch { /* page not ready */ }
-      if (chats.length) this.hadChats.add(key);
-      const json = JSON.stringify(chats);
-      if (json === this.last.get(key)) continue;
-      this.last.set(key, json);
-      this.onChats(key, chats);
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await Promise.all([...this.views].map(([key, view]) => this.pollOne(key, view).catch(() => {})));
+    } finally { this.polling = false; }
+  }
+
+  async pollOne(key, view) {
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    if (wc.isLoading()) {
+      const since = this.loadingSince.get(key) || Date.now();
+      this.loadingSince.set(key, since);
+      if (Date.now() - since > 90000) { this.loadingSince.delete(key); this.reload(key, 'stuck loading', true); }
+      return;
+    }
+    this.loadingSince.delete(key);
+    if (this.archiveBusy.has(key)) return;
+    // The page may re-render and drop the moved column: keep it out of the way while a chat is open.
+    if (this.focused.has(key) && !this.busy.get(key)) await this.js(wc, 'focus').catch(() => {});
+
+    let chats;
+    try { chats = (await this.js(wc, 'list')) || []; this.fails.set(key, 0); } catch {
+      const n = (this.fails.get(key) || 0) + 1;
+      this.fails.set(key, n);
+      if (n >= 4) this.reload(key, 'no answer');
+      return;
+    }
+    const before = this.last.get(key);
+    if (chats.length) { this.hadChats.add(key); this.empty.set(key, 0); }
+    else if (before && before !== '[]') {
+      // The page is redrawing, or lost its connection: keep showing the last list for a while, and reload it if it stays empty.
+      const n = (this.empty.get(key) || 0) + 1;
+      this.empty.set(key, n);
+      if (n === 60) this.reload(key, 'empty for 3 minutes');
+      if (n < 5) return;
+    }
+
+    // Archived chats: read now and then, never while the service is on screen or a chat is being opened.
+    if (this.hadChats.has(key) && key !== this.currentKey && !this.busy.get(key) && Date.now() >= (this.nextArchive.get(key) || 0)) {
+      this.nextArchive.set(key, Date.now() + ARCHIVE_MS);
+      await this.scanArchive(key, wc).catch(() => {});
+    }
+
+    const merged = chats.concat(this.archived.get(key) || []);
+    const json = JSON.stringify(merged);
+    if (json === before) return;
+    this.last.set(key, json);
+    await this.pictures(key, wc, merged);
+    this.onChats(key, merged.map((c) => {
+      const { avatar, ...rest } = c;
+      const data = avatar ? this.avatarCache.get(key + '|' + avatar) : '';
+      const id = key + '|' + c.title;
+      if (data && this.sentAvatar.get(id) !== avatar) { this.sentAvatar.set(id, avatar); return { ...rest, avatar: data }; }
+      return rest;
+    }));
+  }
+
+  // The archived chats of a service: the archive is opened, read and closed again (the page is parked, nobody sees it).
+  async scanArchive(key, wc) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (!(await this.js(wc, 'archiveEntry'))) {
+      const miss = (this.arcMiss.get(key) || 0) + 1;
+      this.arcMiss.set(key, miss);
+      if (miss >= 3) this.archived.set(key, []); // no archive entry in the list: nothing is archived
+      return;
+    }
+    this.arcMiss.set(key, 0);
+    this.archiveBusy.add(key);
+    let rows = null;
+    try {
+      await this.js(wc, 'archiveClick');
+      for (let i = 0; i < 10 && !rows; i++) {
+        await sleep(400);
+        if (this.currentKey === key || wc.isDestroyed()) break;
+        if (!(await this.js(wc, 'archiveInside').catch(() => false))) continue;
+        await sleep(600);
+        const r = await this.js(wc, 'list', { archived: true }).catch(() => null);
+        if (r && r.length) rows = r;
+      }
+    } finally {
+      await this.leaveArchive(key, wc);
+    }
+    if (rows) this.archived.set(key, rows.map((c) => ({ ...c, archived: true })));
+  }
+
+  async leaveArchive(key, wc) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    try {
+      for (let i = 0; i < 4; i++) {
+        if (wc.isDestroyed() || !(await this.js(wc, 'archiveInside').catch(() => false))) break;
+        await this.js(wc, 'archiveClose').catch(() => {});
+        await sleep(600);
+      }
+    } finally { this.archiveBusy.delete(key); }
+  }
+
+  // Profile pictures: blob/data addresses are read inside the page, normal addresses with the page's own session.
+  async pictures(key, wc, chats) {
+    let budget = 15;
+    for (const src of new Set(chats.map((c) => c.avatar).filter(Boolean))) {
+      const id = key + '|' + src;
+      if (this.avatarCache.has(id) || budget <= 0) continue;
+      budget--;
+      let data = '';
+      try {
+        if (/^(blob|data):/i.test(src)) data = (await Promise.race([wc.executeJavaScript(`(${TO_DATA})(${JSON.stringify(src)})`), new Promise((r) => setTimeout(() => r(''), 4000))])) || '';
+        else if (/^https?:/i.test(src)) data = await this.fetchData(wc.session, src, 150000);
+      } catch { data = ''; }
+      this.avatarCache.set(id, data);
+      if (this.avatarCache.size > 800) for (const k of [...this.avatarCache.keys()].slice(0, 200)) this.avatarCache.delete(k);
+    }
+  }
+
+  async fetchData(ses, url, max) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 6000);
+    try {
+      const res = await ses.fetch(url, { signal: ctl.signal });
+      const type = (res.headers.get('content-type') || '').split(';')[0].trim();
+      if (!res.ok || !/^image\//i.test(type)) return '';
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length && buf.length <= max ? `data:${type};base64,${buf.toString('base64')}` : '';
+    } catch { return ''; } finally { clearTimeout(timer); }
+  }
+
+  // Logo of Eitaa, Bale and Rubika: the icon of the service's own page.
+  async grabIcon(key, known) {
+    const base = baseOf(key);
+    const view = this.views.get(key);
+    if (!ICON_SERVICES.has(base) || this.icons.has(base) || !view || view.webContents.isDestroyed()) return;
+    const wc = view.webContents;
+    const urls = known ? [known] : [];
+    if (!known) {
+      let links = [];
+      try { links = await wc.executeJavaScript(`[...document.querySelectorAll('link[rel*="icon" i]')].map((l) => ({ href: l.href, sizes: l.getAttribute('sizes') || '', rel: l.rel }))`); } catch { /* page not ready */ }
+      const score = (c) => (/apple/i.test(c.rel) ? 1000 : 0) + (parseInt(c.sizes) || 0) + (/\.svg/i.test(c.href) ? 500 : 0);
+      for (const c of links.filter((l) => /^https?:/i.test(l.href)).sort((a, b) => score(b) - score(a))) urls.push(c.href);
+      try { urls.push(new URL('/favicon.ico', wc.getURL()).href); } catch { /* no url yet */ }
+    }
+    for (const url of urls.slice(0, 5)) {
+      const data = await this.fetchData(wc.session, url, 200000);
+      if (data) { this.icons.set(base, data); this.onIcon(base, data); return; }
     }
   }
 
@@ -388,18 +634,31 @@ class WebTabs {
     return list;
   }
 
-  async open(key, title, n) {
+  async open(key, title, n, archived) {
     this.busy.set(key, (this.busy.get(key) || 0) + 1);
-    try { await this.openInner(key, title, n); } finally { this.busy.set(key, this.busy.get(key) - 1); }
+    try { await this.openInner(key, title, n, archived); } finally {
+      this.busy.set(key, this.busy.get(key) - 1);
+      // an archived chat that could not be opened must not leave the archive open (and the poll blocked)
+      const view = this.views.get(key);
+      if (archived && view && !view.webContents.isDestroyed() && this.archiveBusy.has(key)) await this.leaveArchive(key, view.webContents);
+    }
   }
 
-  async openInner(key, title, n) {
+  async openInner(key, title, n, archived) {
+    // a scan of the archive in progress has to finish first (it is quick)
+    for (let i = 0; i < 40 && this.archiveBusy.has(key); i++) await new Promise((r) => setTimeout(r, 200));
     this.show(key, false);
     const view = this.views.get(key);
     const wc = view.webContents;
     const call = (op, arg) => wc.executeJavaScript(`(${LIB})(${JSON.stringify(op)}, ${JSON.stringify(arg || null)})`);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const arg = { title, n: n || 0 };
+    const arg = { title, n: n || 0, archived: !!archived };
+    if (archived) { // the chat is in the archive: open the archive first, the chat is clicked there, the archive is left afterwards
+      this.archiveBusy.add(key);
+      await call('archiveClick').catch(() => {});
+      for (let i = 0; i < 12; i++) { await sleep(300); if (await call('archiveInside').catch(() => false)) break; }
+      await sleep(500);
+    }
     const click = async () => {
       const pt = await call('rect', arg).catch(() => null);
       if (!pt) return false;
@@ -442,6 +701,11 @@ class WebTabs {
     } else {
       const ok = await call('open', arg);
       if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
+    }
+
+    if (archived) {
+      await sleep(400);
+      await this.leaveArchive(key, wc);
     }
 
     if (FOCUS.has(baseOf(key))) {
@@ -526,4 +790,4 @@ class WebTabs {
   }
 }
 
-module.exports = { WebTabs };
+module.exports = { WebTabs, LIB };

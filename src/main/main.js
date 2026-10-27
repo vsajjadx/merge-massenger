@@ -6,6 +6,12 @@ const { DownloadCache } = require('./cache');
 const { Hub } = require('./hub');
 const { WebTabs } = require('./webtabs');
 
+// The web clients must keep running (and stay connected) while the window is minimized, covered or not focused.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+
 const CACHE_LIMIT = 2 * 1024 * 1024 * 1024; // 2 GB, least recently used files are removed first
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -57,7 +63,8 @@ function wireIpc() {
   handle('web:inspect', () => webtabs.inspect());
   handle('web:accounts', () => webtabs.extra());
   handle('web:account', (key, on) => (on ? webtabs.enable(key) : webtabs.disable(key)));
-  handle('web:open', (key, title, n) => webtabs.open(key, title, n));
+  handle('web:open', (key, title, n, archived) => webtabs.open(key, title, n, archived));
+  handle('web:icons', () => (webtabs ? Object.fromEntries(webtabs.icons) : {}));
 
   handle('chats:list', () => hub.listChats());
   handle('chats:open', (id) => hub.openChat(id));
