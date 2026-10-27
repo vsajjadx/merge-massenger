@@ -104,12 +104,12 @@ const LIB = function (op, arg) {
     return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread };
   }
 
-  // The innermost element that holds the title: clicks must start there, because the page's own click
-  // handler often sits on an inner element of the row (Bale, WhatsApp) and an event fired on the outer
-  // row never travels down to it.
+  // Where the click starts. Telegram-style rows (Telegram, Eitaa, Rubika) are clicked on the row itself:
+  // a click on the .peer-title inside opens the profile instead of the chat. For the other clients the
+  // page's own click handler sits on an inner element of the row (Bale, WhatsApp), so the click starts at
+  // the innermost element holding the title and travels up from there.
   function clickTarget(row, title) {
-    const pt = row.querySelector('.peer-title');
-    if (pt) return pt;
+    if (row.querySelector('.peer-title')) return row;
     const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
     for (let n; (n = w.nextNode());) if (norm(n.textContent) === title && n.parentElement) return n.parentElement;
     return row;
@@ -146,10 +146,13 @@ const LIB = function (op, arg) {
     if (col.contains(comp)) return false;
     const box = col.getBoundingClientRect();
     const par = col.parentElement;
+    // Everything else beside the column goes too: the icon rail and the thin absolutely placed divider
+    // elements some clients draw between the list and the chat (WhatsApp shows them as white lines).
     for (const sib of par.children) {
-      if (sib === col || sib.contains(comp)) continue;
+      if (sib === col || sib.contains(comp) || sib.querySelector(EDIT)) continue;
       const r = sib.getBoundingClientRect();
-      if (r.width > 0 && r.width <= 140 && r.height > innerHeight * 0.5 && !sib.querySelector(EDIT)) {
+      const pos = getComputedStyle(sib).position;
+      if (r.width <= 140 || pos === 'absolute' || pos === 'fixed') {
         sib.dataset.umHide = sib.getAttribute('style') || '';
         sib.style.setProperty('display', 'none', 'important');
       }
