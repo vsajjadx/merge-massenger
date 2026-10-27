@@ -130,9 +130,26 @@ const LIB = function (op, arg) {
   // Bale, Rubika and WhatsApp show their own chat list next to the open chat, which would double our list.
   // "focus" moves that column (and the narrow icon rail beside it) out of view; it stays rendered, so the
   // list can still be read. "unfocus" puts everything back for when the service is opened with its button.
+  const restore = (el, attr) => {
+    const old = el.dataset[attr];
+    if (old) el.setAttribute('style', old); else el.removeAttribute('style');
+    delete el.dataset[attr];
+  };
+  // Undo what "reveal" did (the page's list was forced on screen for a click).
+  const restoreRev = () => { for (const el of document.querySelectorAll('[data-um-rev]')) restore(el, 'umRev'); };
+  const restoreAll = () => {
+    restoreRev();
+    for (const el of document.querySelectorAll('[data-um-hide]')) restore(el, 'umHide');
+    const col = document.querySelector('[data-um-col]');
+    if (col) { restore(col, 'umStyle'); delete col.dataset.umCol; }
+    const grid = document.querySelector('[data-um-grid]');
+    if (grid) restore(grid, 'umGrid');
+  };
+
   if (op === 'focus') {
     const cur = document.querySelector('[data-um-col]');
     if (cur && cur.isConnected) return true;
+    restoreRev();
     const list = (rows()[0] || {}).parentElement;
     if (!list) return false;
     const comp = composer(list);
@@ -168,17 +185,38 @@ const LIB = function (op, arg) {
     }
     return true;
   }
-  if (op === 'unfocus') {
-    const restore = (el, attr) => {
-      const old = el.dataset[attr];
-      if (old) el.setAttribute('style', old); else el.removeAttribute('style');
-      delete el.dataset[attr];
-    };
-    for (const el of document.querySelectorAll('[data-um-hide]')) restore(el, 'umHide');
-    const col = document.querySelector('[data-um-col]');
-    if (col) { restore(col, 'umStyle'); delete col.dataset.umCol; }
-    const grid = document.querySelector('[data-um-grid]');
-    if (grid) restore(grid, 'umGrid');
+  if (op === 'unfocus') { restoreAll(); return true; }
+
+  // "reveal": the page may hide its own list while a chat is open (narrow window, its own responsive layout),
+  // so a real click could land on the open chat instead of the row. The list and every wrapper around it are
+  // forced into view, pinned over the page and almost transparent, just for the click.
+  if (op === 'reveal') {
+    restoreAll();
+    const list = (rows()[0] || {}).parentElement;
+    if (!list) return false;
+    const comp = composer(list);
+    if (!comp) return true; // no chat open: the list is where the page put it
+    const chain = [];
+    for (let el = list; el && el !== document.body && el !== document.documentElement && !el.contains(comp); el = el.parentElement) chain.push(el);
+    for (const el of chain) {
+      el.dataset.umRev = el.getAttribute('style') || '';
+      el.style.setProperty('visibility', 'visible', 'important');
+      el.style.setProperty('opacity', '1', 'important');
+      el.style.setProperty('transform', 'none', 'important');
+      el.style.setProperty('translate', 'none', 'important');
+      el.style.setProperty('pointer-events', 'auto', 'important');
+      if (getComputedStyle(el).display === 'none') el.style.setProperty('display', 'flex', 'important');
+    }
+    const col = chain[chain.length - 1];
+    if (col) {
+      col.style.setProperty('position', 'fixed', 'important');
+      col.style.setProperty('left', '0', 'important');
+      col.style.setProperty('top', '0', 'important');
+      col.style.setProperty('width', Math.min(innerWidth, 420) + 'px', 'important');
+      col.style.setProperty('height', innerHeight + 'px', 'important');
+      col.style.setProperty('z-index', '2147483000', 'important');
+      col.style.setProperty('opacity', '0.01', 'important');
+    }
     return true;
   }
 
@@ -193,10 +231,18 @@ const LIB = function (op, arg) {
   const target = hits[arg.n] || hits[0];
   if (!target) return false;
   const el = clickTarget(target.el, target.chat.title);
+  if (op === 'opened') { // is this chat the one the page shows now?
+    const row = target.el;
+    if (/(^|\s)(is-)?(active|selected|current)(\s|$)/i.test(row.getAttribute('class') || '') || row.getAttribute('aria-selected') === 'true') return true;
+    return [...document.querySelectorAll('.peer-title')].some((e) => !row.parentElement.contains(e) && e.getClientRects().length && norm(e.textContent) === arg.title);
+  }
   if (op === 'rect') { // where a real mouse click has to land
     el.scrollIntoView({ block: 'nearest' });
     const q = el.getBoundingClientRect();
-    return q.width > 0 && q.height > 0 ? { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2) } : null;
+    if (!(q.width > 0 && q.height > 0)) return null;
+    const x = Math.round(q.left + q.width / 2), y = Math.round(q.top + q.height / 2);
+    const top = document.elementFromPoint(x, y);
+    return { x, y, hit: !!(top && target.el.contains(top)) };
   }
   const r = el.getBoundingClientRect();
   const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, detail: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
@@ -219,6 +265,7 @@ class WebTabs {
     this.last = new Map();
     this.currentKey = null;
     this.focused = new Set(); // services opened from our list: their own list stays out of view
+    this.busy = new Map();    // services with a chat being opened right now: the poll leaves their layout alone
     this.timer = null;
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
@@ -259,7 +306,7 @@ class WebTabs {
     for (const [key, view] of this.views) {
       if (view.webContents.isDestroyed() || view.webContents.isLoading()) continue;
       // The page may re-render and drop the moved column: keep it out of the way while a chat is open.
-      if (this.focused.has(key)) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
+      if (this.focused.has(key) && !this.busy.get(key)) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
       let chats = [];
       try { chats = (await view.webContents.executeJavaScript(`(${LIB})('list')`)) || []; } catch { /* page not ready */ }
       const json = JSON.stringify(chats);
@@ -300,6 +347,11 @@ class WebTabs {
   }
 
   async open(key, title, n) {
+    this.busy.set(key, (this.busy.get(key) || 0) + 1);
+    try { await this.openInner(key, title, n); } finally { this.busy.set(key, this.busy.get(key) - 1); }
+  }
+
+  async openInner(key, title, n) {
     this.show(key, false);
     const view = this.views.get(key);
     const wc = view.webContents;
@@ -316,11 +368,32 @@ class WebTabs {
     };
 
     if (REAL_CLICK.has(baseOf(key))) {
-      // These clients only react to a real mouse click, and the row has to be on screen for it: the page's
-      // own list is brought back for a moment (it is moved aside again below), the row is clicked.
-      await call('unfocus').catch(() => {});
-      await sleep(250);
-      if (!(await click())) throw new Error('Chat not found in the web page, open it from the service button');
+      // These clients only react to a real mouse click, and the row has to be under the pointer: the page's list
+      // is forced into view for a moment, the row is clicked, and the click is checked (the page's header must show
+      // the chat). If the chat did not change the click is repeated; the second retry first presses Escape to close
+      // the open chat, which also brings the list back in the page's narrow layout.
+      let opened = false;
+      for (let attempt = 0; attempt < 3 && !opened; attempt++) {
+        if (attempt === 2) {
+          wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+          wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+          await sleep(300);
+        }
+        await call('reveal').catch(() => {});
+        let pt = null;
+        for (let i = 0; i < 6; i++) { // the layout needs a moment after the list is forced into view
+          await sleep(i ? 120 : 200);
+          pt = await call('rect', arg).catch(() => null);
+          if (pt && pt.hit) break;
+        }
+        if (!pt) throw new Error('Chat not found in the web page, open it from the service button');
+        wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
+        await sleep(40);
+        wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        await sleep(attempt ? 700 : 500);
+        opened = await call('opened', arg).catch(() => true);
+      }
     } else {
       const ok = await call('open', arg);
       if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
