@@ -451,13 +451,34 @@ function accountHtml(source, title, s) {
   return `<div class="acct"><h3>${title}<span class="pill ${ok ? 'ok' : ''}">${label}</span></h3>${body}</div>`;
 }
 
+// The gear dialog: one row per messenger. "Open" shows that service's own web page in full (its own
+// menu and settings); the second account of a service can be added or removed here too.
+const SERVICE_LIST = [['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
 function renderAccounts() {
-  const focused = document.activeElement && document.activeElement.closest('#accounts');
-  if (!$('#modal').hidden && focused && document.activeElement.tagName === 'INPUT') return; // do not wipe what is being typed
-  $('#accounts').innerHTML = accountHtml('tg', 'Telegram', state.statuses.tg) + accountHtml('wa', 'WhatsApp', state.statuses.wa);
-  const allReady = ['tg', 'wa'].every((k) => state.statuses[k] && state.statuses[k].state === 'ready');
-  $('#statusDot').classList.toggle('ok', allReady);
+  const row = (key, name, extra) => `<div class="svc-row"><div class="svc-name"><span class="src ${key.replace(/2$/, '')}" style="position:static;display:inline-block;margin-right:8px">${esc(name[0])}</span>${esc(name)}</div>
+    <button class="btn" data-open="${key}">Open and settings</button>${extra || ''}</div>`;
+  $('#accounts').innerHTML = SERVICE_LIST.map(([k, name]) => {
+    const on = state.extra && state.extra.has(k + '2');
+    const toggle = `<button class="btn ${on ? '' : 'ghost'}" data-acc="${k}2" data-on="${on ? 1 : 0}">${on ? 'Remove 2nd account' : 'Add 2nd account'}</button>`;
+    return row(k, name, toggle) + (on ? row(k + '2', name + ' 2') : '');
+  }).join('');
+  $('#statusDot').hidden = true;
 }
+$('#accounts').addEventListener('click', (e) => {
+  const open = e.target.closest('[data-open]');
+  if (open) {
+    $('#modal').hidden = true;
+    markRail(open.dataset.open);
+    guard(api.showWeb(open.dataset.open));
+    return;
+  }
+  const acc = e.target.closest('[data-acc]');
+  if (acc) {
+    const key = acc.dataset.acc;
+    if (acc.dataset.on === '1' && document.querySelector(`.rail-btn[data-svc="${key}"]`).classList.contains('active')) markRail(null);
+    guard(api.setAccount(key, acc.dataset.on !== '1'));
+  }
+});
 
 async function refreshCache() {
   const c = await api.cacheInfo();
@@ -498,7 +519,6 @@ api.onHistory(async (id) => {
 api.onStatus((s) => {
   state.statuses[s.source] = s;
   renderAccounts();
-  if (s.state.startsWith('need_') && s.state !== 'need_config' && $('#modal').hidden) openModal(); // login input needed
 });
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
@@ -522,6 +542,7 @@ state.extra = new Set();
 function applyAccounts(list) {
   state.extra = new Set(list);
   document.querySelectorAll('.rail-btn[data-svc$="2"]').forEach((b) => { b.hidden = !state.extra.has(b.dataset.svc); });
+  if (!$('#modal').hidden) renderAccounts();
 }
 api.onAccounts(applyAccounts);
 api.accounts().then(applyAccounts);
@@ -560,5 +581,4 @@ $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved
   state.statuses = await api.statuses();
   renderList();
   renderAccounts();
-  if (Object.values(state.statuses).some((s) => s.state.startsWith('need_') && s.state !== 'need_config')) openModal();
 })();

@@ -127,3 +127,7 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 .modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); }
 .modal-foot .btn { background: var(--hover); color: var(--text); }
 ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #4a5a6a55; border-radius: 4px; }
+
+.svc-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.svc-name { flex: 1; font-weight: 600; }
+.btn.ghost { background: none; border: 1px solid var(--line); color: var(--muted); }
