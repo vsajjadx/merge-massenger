@@ -455,28 +455,28 @@ function accountHtml(source, title, s) {
 // menu and settings); the second account of a service can be added or removed here too.
 const SERVICE_LIST = [['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
 function renderAccounts() {
-  const row = (key, name, extra) => `<div class="svc-row"><div class="svc-name"><span class="src ${key.replace(/2$/, '')}" style="position:static;display:inline-block;margin-right:8px">${esc(name[0])}</span>${esc(name)}</div>
-    <button class="btn" data-open="${key}">Open and settings</button>${extra || ''}</div>`;
-  $('#accounts').innerHTML = SERVICE_LIST.map(([k, name]) => {
-    const on = state.extra && state.extra.has(k + '2');
-    const toggle = `<button class="btn ${on ? '' : 'ghost'}" data-acc="${k}2" data-on="${on ? 1 : 0}">${on ? 'Remove 2nd account' : 'Add 2nd account'}</button>`;
-    return row(k, name, toggle) + (on ? row(k + '2', name + ' 2') : '');
-  }).join('');
-  $('#statusDot').hidden = true;
+  const rows = [];
+  for (const k of ['tg', 'wa', 'ei', 'ba', 'ru']) {
+    const second = k + '2', on = state.extra.has(second);
+    const row = (key, label, extra) => `<div class="svc-row ${extra}"><div class="name">${label}</div>
+      <button class="btn" data-open="${key}">Open</button><button class="btn" data-settings="${key}">Settings</button>
+      ${extra ? `<button class="btn" data-second="${second}:0">Remove</button>` : ''}</div>`;
+    rows.push(row(k, SOURCE[k], ''));
+    rows.push(on ? row(second, SOURCE[k] + ' 2', 'second')
+      : `<div class="svc-row second"><div class="name"><small>${SOURCE[k]}: second account</small></div><button class="btn" data-second="${second}:1">Add</button></div>`);
+  }
+  $('#accounts').innerHTML = rows.join('');
 }
 $('#accounts').addEventListener('click', (e) => {
-  const open = e.target.closest('[data-open]');
-  if (open) {
+  const o = e.target.closest('[data-open]'), st = e.target.closest('[data-settings]'), sc = e.target.closest('[data-second]');
+  if (o || st) {
+    const key = (o || st).dataset.open || (o || st).dataset.settings;
     $('#modal').hidden = true;
-    markRail(open.dataset.open);
-    guard(api.showWeb(open.dataset.open));
-    return;
-  }
-  const acc = e.target.closest('[data-acc]');
-  if (acc) {
-    const key = acc.dataset.acc;
-    if (acc.dataset.on === '1' && document.querySelector(`.rail-btn[data-svc="${key}"]`).classList.contains('active')) markRail(null);
-    guard(api.setAccount(key, acc.dataset.on !== '1'));
+    markRail(key);
+    guard(o ? api.showWeb(key) : api.openWebSettings(key));
+  } else if (sc) {
+    const [key, on] = sc.dataset.second.split(':');
+    guard(api.setAccount(key, on === '1'));
   }
 });
 
@@ -544,7 +544,7 @@ function applyAccounts(list) {
   document.querySelectorAll('.rail-btn[data-svc$="2"]').forEach((b) => { b.hidden = !state.extra.has(b.dataset.svc); });
   if (!$('#modal').hidden) renderAccounts();
 }
-api.onAccounts(applyAccounts);
+api.onAccounts((list) => { applyAccounts(list); if (!$('#modal').hidden) renderAccounts(); });
 api.accounts().then(applyAccounts);
 $('#rail').addEventListener('contextmenu', (e) => {
   const b = e.target.closest('.rail-btn[data-svc]');

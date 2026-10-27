@@ -321,6 +321,18 @@ class WebTabs {
     this.currentKey = null;
   }
 
+  // Opens the service with its full page and tries to open its own menu (where its settings are).
+  async settings(key) {
+    const view = this.views.get(key);
+    if (!view) return;
+    this.show(key, true);
+    await new Promise((r) => setTimeout(r, 300));
+    await view.webContents.executeJavaScript(`(function () {
+      const click = (el) => { if (!el) return false; for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, button: 0 })); return true; };
+      return click(document.querySelector('.sidebar-header .btn-menu-toggle, .sidebar-tools-button')) || click(document.querySelector('button[aria-label="Settings"], [data-icon="settings"]'));
+    })()`).catch(() => false);
+  }
+
   // Saves an anonymised outline of the open page (tags, classes, attributes; letters in texts are
   // replaced by "a") so the chat list and message elements of that web client can be located.
   async inspect() {

@@ -53,6 +53,7 @@ function wireIpc() {
 
   handle('web:show', (key) => webtabs && webtabs.show(key));
   handle('web:hide', () => webtabs && webtabs.hide());
+  handle('web:settings', (key) => webtabs.settings(key));
   handle('web:inspect', () => webtabs.inspect());
   handle('web:accounts', () => webtabs.extra());
   handle('web:account', (key, on) => (on ? webtabs.enable(key) : webtabs.disable(key)));
