@@ -377,12 +377,14 @@ api.onStatus((s) => {
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
 
-document.querySelectorAll('.rail-btn').forEach((b) => {
+document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
   b.onclick = () => {
-    document.querySelectorAll('.rail-btn').forEach((x) => x.classList.toggle('active', x === b));
+    document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x === b));
     guard(b.dataset.svc === 'chats' ? api.hideWeb() : api.showWeb(b.dataset.svc));
   };
 });
+
+$('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
 
 (async function init() {
   state.chats = new Map((await api.listChats()).map((c) => [c.id, c]));

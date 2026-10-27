@@ -55,6 +55,7 @@ function wireIpc() {
 
   handle('web:show', (key) => webtabs && webtabs.show(key));
   handle('web:hide', () => webtabs && webtabs.hide());
+  handle('web:inspect', () => webtabs.inspect());
 
   handle('chats:list', () => hub.listChats());
   handle('chats:open', (id) => hub.openChat(id));

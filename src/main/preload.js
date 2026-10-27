@@ -10,6 +10,7 @@ const on = (channel) => (cb) => {
 contextBridge.exposeInMainWorld('messenger', {
   showWeb: invoke('web:show'),
   hideWeb: invoke('web:hide'),
+  inspectWeb: invoke('web:inspect'),
   listChats: invoke('chats:list'),
   openChat: invoke('chats:open'),
   messages: invoke('chats:messages'),
