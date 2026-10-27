@@ -1,11 +1,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
 const { app, ipcMain, nativeImage } = require('electron');
 const { safeFileName } = require('./shared');
 
-const NAMES = { tg: 'Telegram', wa: 'WhatsApp', ei: 'Eitaa', ba: 'Bale', ru: 'Rubika' };
 const EXT = {
   'application/pdf': '.pdf', 'application/msword': '.doc', 'application/rtf': '.rtf', 'text/rtf': '.rtf', 'text/csv': '.csv',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
@@ -29,19 +27,14 @@ function uniquePath(dir, name) {
   return p;
 }
 
-// Saves files that come out of the web clients: downloads (whatever the page triggers, no dialog),
-// documents the pages fetch on their own, and pictures dragged out of a chat.
+// Files that come out of the web clients: downloads the user starts (no dialog, straight to the Desktop)
+// and pictures dragged out of a chat. Nothing is saved without the user asking for it.
 class WebFiles {
   constructor(notify) {
     this.notify = notify;
     this.owners = new Map();    // webContents id -> { key, ses }
-    this.blobSaved = new Map(); // blob: URL -> file saved for it
     this.dragDir = path.join(os.tmpdir(), 'unified-messenger-drag');
-    this.hashFile = path.join(app.getPath('userData'), 'saved-hashes.json');
-    this.hashes = new Set();
-    try { this.hashes = new Set(JSON.parse(fs.readFileSync(this.hashFile, 'utf8'))); } catch { /* first run */ }
 
-    ipcMain.on('um:doc', (e, d) => this.onDoc(e.sender.id, d));
     ipcMain.handle('um:drag-prepare', (_e, d) => this.writeDrag(Buffer.from(d.bytes), d.type));
     ipcMain.handle('um:drag-prepare-url', async (e, url) => {
       const o = this.owners.get(e.sender.id);
@@ -75,37 +68,10 @@ class WebFiles {
 
   // A click on Download, or "Save" in the page's own right click menu: straight to the Desktop.
   onDownload(item) {
-    const saved = this.blobSaved.get(item.getURL());
     const name = safeFileName(item.getFilename(), 'file');
-    if (saved && fs.existsSync(saved)) {
-      // the document was already saved when the page built it: only give it the real file name
-      item.cancel();
-      if (name !== path.basename(saved) && !/^(download|blob|file)(\.|$)/i.test(name)) {
-        const dest = uniquePath(path.dirname(saved), name);
-        try { fs.renameSync(saved, dest); this.blobSaved.set(item.getURL(), dest); this.notify(`Saved to Desktop: ${path.basename(dest)}`); } catch { /* keep the first name */ }
-      }
-      return;
-    }
     const dest = uniquePath(this.desktop(), name);
     item.setSavePath(dest);
     item.once('done', (_ev, state) => { if (state === 'completed') this.notify(`Saved to Desktop: ${path.basename(dest)}`); });
-  }
-
-  onDoc(id, d) {
-    const o = this.owners.get(id);
-    if (!o || !d || !d.bytes) return;
-    const buf = Buffer.from(d.bytes);
-    const hash = crypto.createHash('sha1').update(buf).digest('hex');
-    if (this.hashes.has(hash)) return; // already saved earlier
-    const type = String(d.type || '').split(';')[0].toLowerCase();
-    let name = safeFileName(d.name, '');
-    if (!name) name = `${NAMES[o.key.replace(/2$/, '')] || 'Messenger'}-${stamp()}${EXT[type] || '.bin'}`;
-    const dest = uniquePath(this.desktop(), name);
-    try { fs.writeFileSync(dest, buf); } catch (err) { this.notify(`Could not save ${name}: ${err.message}`); return; }
-    this.hashes.add(hash);
-    this.blobSaved.set(d.url, dest);
-    try { fs.writeFileSync(this.hashFile, JSON.stringify([...this.hashes].slice(-3000))); } catch { /* not critical */ }
-    this.notify(`Saved to Desktop: ${path.basename(dest)}`);
   }
 
   writeDrag(buf, type) {

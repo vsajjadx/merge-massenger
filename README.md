@@ -32,8 +32,7 @@ The date label each web client shows (clock time, weekday, Gregorian or Jalali d
 ## Files from the web clients
 
 - Any download a web client starts (its Download button, or Save in its own right click menu) goes straight to the Desktop, without a dialog.
-- Documents a client fetches on its own (PDF, Word/Excel/PowerPoint and other Office files, ZIP/RAR/7z/TAR, DWG/DXF, TXT/CSV) are saved to the Desktop as soon as they exist, not only the ones you click.
-  The same file is saved once. Videos, audio and pictures are never saved automatically.
+- Files a client receives on its own are not saved anywhere: only a file you click (download, or Save in its right click menu) goes to the Desktop.
 - Drag a picture from a chat out of the window to drop it as a file.
 
 ## Adding another messenger
