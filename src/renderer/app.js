@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 
 const state = {
   chats: new Map(), active: null, messages: [], statuses: {}, pending: [], search: '',
-  downloading: new Set(), loadingOlder: false, modalShown: false,
+  downloading: new Set(), loadingOlder: false, modalShown: false, filter: null,
 };
 const SOURCE = { tg: 'Telegram', wa: 'WhatsApp', ei: 'Eitaa', ba: 'Bale', ru: 'Rubika' };
 
@@ -149,10 +149,11 @@ function togglePin(id) {
 }
 
 // ---------- chat list ----------
-function sortedChats() {
+// byService: the sidebar shows only the messenger picked on the rail; All (no pick) and the feed show every messenger.
+function sortedChats(byService = true) {
   const q = state.search.trim().toLowerCase();
   return [...state.chats.values()]
-    .filter((c) => (c.pinned || c.lastTs > 0) && (!q || c.title.toLowerCase().includes(q)))
+    .filter((c) => (!byService || !state.filter || c.source === state.filter) && (c.pinned || c.lastTs > 0) && (!q || c.title.toLowerCase().includes(q)))
     .sort((a, b) => (b.pinned - a.pinned) || (a.pinned ? a.pinOrder - b.pinOrder : 0) || (b.lastTs - a.lastTs));
 }
 
@@ -187,7 +188,7 @@ state.feedFilter = 'all';
 
 function renderFeed() {
   const base = (c) => c.source.replace(/2$/, '');
-  const all = sortedChats();
+  const all = sortedChats(false);
   $('#feedTabs').innerHTML = FEED_TABS.map(([k, label]) => {
     const list = k === 'all' ? all : all.filter((c) => base(c) === k);
     const unread = list.reduce((n, c) => n + (c.unread || 0), 0);
@@ -487,6 +488,7 @@ $('#accounts').addEventListener('click', (e) => {
   if (o || st) {
     const key = (o || st).dataset.open || (o || st).dataset.settings;
     $('#modal').hidden = true;
+    state.filter = key;
     markRail(key);
     guard(o ? api.showWeb(key) : api.openWebSettings(key));
   } else if (sc) {
@@ -547,12 +549,14 @@ function markRail(svc) {
   document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
   $('#allBtn').classList.toggle('active', !svc);
   state.rail = svc || null; // the service whose page is open, null on All
-  if (!svc) { state.active = null; renderList(); }
+  if (!svc) state.active = null;
+  renderList();
 }
-$('#allBtn').onclick = () => { markRail(null); guard(api.hideWeb()); };
+$('#allBtn').onclick = () => { state.filter = null; markRail(null); guard(api.hideWeb()); };
 document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
   b.onclick = () => {
     const off = b.classList.contains('active'); // clicking the open service again closes it
+    state.filter = off ? null : b.dataset.svc;
     markRail(off ? null : b.dataset.svc);
     guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc));
   };
