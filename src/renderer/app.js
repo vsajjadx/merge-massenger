@@ -5,7 +5,7 @@ const state = {
   chats: new Map(), active: null, messages: [], statuses: {}, pending: [], search: '',
   downloading: new Set(), loadingOlder: false, modalShown: false,
 };
-const SOURCE = { tg: 'Telegram', wa: 'WhatsApp' };
+const SOURCE = { tg: 'Telegram', wa: 'WhatsApp', ei: 'Eitaa', ba: 'Bale', ru: 'Rubika' };
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -37,7 +37,7 @@ function dayLabel(ts) {
 function hue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
 function avatar(chat, extra = '') {
   const initials = (chat.title || '?').trim().split(/\s+/).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase() || '?';
-  const src = chat.source === 'tg' ? 'T' : 'W';
+  const src = { tg: 'T', wa: 'W', ei: 'E', ba: 'B', ru: 'R' }[chat.source] || '?';
   return `<div class="avatar ${extra}" style="background:hsl(${hue(chat.id)} 45% 42%)">${esc(initials)}<span class="src ${chat.source}">${src}</span></div>`;
 }
 const PIN = '<svg class="pin" viewBox="0 0 24 24"><path d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5a3 3 0 0 1-2 2.8V13h5v7l1 2 1-2v-7h5v-1.2A3 3 0 0 1 16 9z"/></svg>';
@@ -76,11 +76,11 @@ function renderList() {
       html += `<div class="chat-item ${c.id === state.active ? 'active' : ''}" data-id="${esc(c.id)}">
         ${avatar(c)}
         <div class="c-body">
-          <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${listTime(c.lastTs)}</div></div>
+          <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
           <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : c.pinned ? PIN : ''}</div>
         </div></div>`;
     });
-    $('#chatList').innerHTML = html || '<div class="c-last" style="padding:20px;text-align:center">No chats yet. Connect an account with the gear button.</div>';
+    $('#chatList').innerHTML = html || '<div class="c-last" style="padding:20px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
   });
 }
 
@@ -132,6 +132,15 @@ function upsertMessage(m) {
 }
 
 async function openChat(id) {
+  const web = state.chats.get(id);
+  if (web && web.web) {
+    state.active = id;
+    $('#empty').hidden = true;
+    $('#chatView').hidden = true;
+    markRail(web.source);
+    renderList();
+    return guard(api.openWebChat(web.source, web.title, web.n));
+  }
   state.active = id;
   state.pending = [];
   renderPending();
@@ -270,6 +279,7 @@ $('#chatList').addEventListener('contextmenu', (e) => {
   if (!item) return;
   e.preventDefault();
   const c = state.chats.get(item.dataset.id);
+  if (c.web) return;
   const entries = [{ label: c.pinned ? 'Unpin' : 'Pin to top', run: () => guard(api.pin(c.id, !c.pinned)) }];
   if (c.unread) entries.push({ label: 'Mark as read', run: () => guard(api.markRead(c.id)) });
   showMenu(e.clientX, e.clientY, entries);
@@ -376,19 +386,42 @@ api.onStatus((s) => {
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
 
+function markRail(svc) {
+  document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
+}
 document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
   b.onclick = () => {
-    document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x === b));
-    guard(b.dataset.svc === 'chats' ? api.hideWeb() : api.showWeb(b.dataset.svc));
+    const off = b.classList.contains('active'); // clicking the open service again closes it
+    markRail(off ? null : b.dataset.svc);
+    guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc));
   };
+});
+
+// Chat lists read from the web clients, merged into the one list.
+api.onWebChats(({ key, chats }) => {
+  for (const [id, c] of state.chats) if (c.source === key) state.chats.delete(id);
+  const todayStart = new Date().setHours(0, 0, 0, 0) / 1000;
+  const seen = new Map();
+  chats.forEach((c, rank) => {
+    const n = seen.get(c.title) || 0;
+    seen.set(c.title, n + 1);
+    let ts = todayStart - (rank + 1) * 60; // not from today: keeps the service's own order, below today's chats
+    const m = /^(\d{1,2}):(\d{2})\s?([ap]m)?$/i.exec(c.time || '');
+    if (m) {
+      let h = Number(m[1]);
+      if (m[3] && /pm/i.test(m[3]) && h < 12) h += 12;
+      if (m[3] && /am/i.test(m[3]) && h === 12) h = 0;
+      ts = todayStart + h * 3600 + Number(m[2]) * 60;
+    }
+    const id = `${key}:${c.title}#${n}`;
+    state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, timeText: c.time, unread: c.unread, pinned: false });
+  });
+  renderList();
 });
 
 $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
 
-api.showWeb('tg').catch(() => {}); // opens on the first service
-
 (async function init() {
-  state.chats = new Map((await api.listChats()).map((c) => [c.id, c]));
   state.statuses = await api.statuses();
   renderList();
   renderAccounts();

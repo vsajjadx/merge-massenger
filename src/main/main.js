@@ -26,7 +26,8 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.setMenuBarVisibility(false);
-  webtabs = new WebTabs(win);
+  webtabs = new WebTabs(win, (key, chats) => send('web:chats', { key, chats }));
+  webtabs.start();
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   // Links in messages open in the real browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
@@ -53,6 +54,7 @@ function wireIpc() {
   handle('web:show', (key) => webtabs && webtabs.show(key));
   handle('web:hide', () => webtabs && webtabs.hide());
   handle('web:inspect', () => webtabs.inspect());
+  handle('web:open', (key, title, n) => webtabs.open(key, title, n));
 
   handle('chats:list', () => hub.listChats());
   handle('chats:open', (id) => hub.openChat(id));
