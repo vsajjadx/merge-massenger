@@ -280,6 +280,7 @@ class WebTabs {
     this.focused = new Set(); // services opened from our list: their own list stays out of view
     this.busy = new Map();    // services with a chat being opened right now: the poll leaves their layout alone
     this.timer = null;
+    this.hadChats = new Set(); // services whose chat list has been read at least once this session
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -296,6 +297,22 @@ class WebTabs {
     for (const key of [...Object.keys(SERVICES), ...extra]) this.create(key);
     this.layout();
     this.timer = setInterval(() => this.poll(), POLL_MS);
+    setTimeout(() => this.warmUp(), 12000);
+  }
+
+  // Fallback for pages that still do not fill their chat list while parked: every service that has not shown a
+  // chat yet is brought on screen for a moment, one after the other (what opening each one by hand did), then put away.
+  async warmUp() {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const key of [...this.views.keys()]) {
+      if (this.win.isDestroyed() || this.hadChats.has(key)) continue;
+      if (this.currentKey) return; // the user opened a service: leave the layout alone
+      const view = this.views.get(key);
+      if (!view || view.webContents.isDestroyed()) continue;
+      this.show(key, false);
+      for (let i = 0; i < 8 && !this.hadChats.has(key); i++) { await sleep(500); await this.poll(); }
+      if (this.currentKey === key) this.hide();
+    }
   }
 
   create(key) {
@@ -328,6 +345,7 @@ class WebTabs {
       if (this.focused.has(key) && !this.busy.get(key)) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
       let chats = [];
       try { chats = (await view.webContents.executeJavaScript(`(${LIB})('list')`)) || []; } catch { /* page not ready */ }
+      if (chats.length) this.hadChats.add(key);
       const json = JSON.stringify(chats);
       if (json === this.last.get(key)) continue;
       this.last.set(key, json);
@@ -460,11 +478,12 @@ class WebTabs {
     this.currentKey = null;
   }
 
-  // Same size as when shown (the page lays out its list normally), but far outside the window.
+  // Same size as when shown (the page lays out its list normally), pushed to the right so that only a 1 px strip
+  // stays inside the window: a view lying completely outside is not rendered, one with a visible strip is.
   park(view) {
     view.setVisible(true);
-    const b = this.onScreen();
-    view.setBounds({ ...b, x: -(b.width + 4000), y: 0 });
+    const [w] = this.win.getContentSize();
+    view.setBounds({ ...this.onScreen(), x: w - 1 });
   }
 
   onScreen() {
