@@ -549,7 +549,12 @@ function markRail(svc) {
   document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
   $('#allBtn').classList.toggle('active', !svc);
   state.rail = svc || null; // the service whose page is open, null on All
-  if (!svc) state.active = null;
+  if (!svc) {
+    // Back on All: the feed was hidden when a chat was opened from it, so it has to be shown again.
+    state.active = null;
+    $('#feed').hidden = false;
+    $('#chatView').hidden = true;
+  }
   renderList();
 }
 $('#allBtn').onclick = () => { state.filter = null; markRail(null); guard(api.hideWeb()); };
