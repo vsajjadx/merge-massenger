@@ -21,6 +21,9 @@ Click the gear button.
 - **WhatsApp**: scan the QR code from WhatsApp > Linked devices. This uses the unofficial Baileys library, so keep usage to normal
   reading and replying. The login files live in the app data folder under `wa-auth` (not encrypted).
 
+- **Eitaa, Bale, Rubika**: use the buttons on the left rail. Each opens the service's official web client (web.eitaa.com, web.bale.ai, web.rubika.ir)
+  inside the app; log in there with your phone number and code. The login is kept between runs. These chats are not merged into the main list.
+
 ## Behaviour
 
 - Text and chat list are stored in a local SQLite database. Files are never downloaded automatically: a card with name and size

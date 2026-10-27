@@ -377,6 +377,13 @@ api.onStatus((s) => {
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
 
+document.querySelectorAll('.rail-btn').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.rail-btn').forEach((x) => x.classList.toggle('active', x === b));
+    guard(b.dataset.svc === 'chats' ? api.hideWeb() : api.showWeb(b.dataset.svc));
+  };
+});
+
 (async function init() {
   state.chats = new Map((await api.listChats()).map((c) => [c.id, c]));
   state.statuses = await api.statuses();

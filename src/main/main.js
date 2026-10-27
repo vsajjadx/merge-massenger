@@ -7,12 +7,14 @@ const { Hub } = require('./hub');
 const secrets = require('./secrets');
 const { TelegramAdapter } = require('./adapters/telegram');
 const { WhatsAppAdapter } = require('./adapters/whatsapp');
+const { WebTabs } = require('./webtabs');
 
 const CACHE_LIMIT = 2 * 1024 * 1024 * 1024; // 2 GB, least recently used files are removed first
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;
+let webtabs = null;
 let hub = null;
 let store = null;
 let cache = null;
@@ -27,11 +29,12 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.setMenuBarVisibility(false);
+  webtabs = new WebTabs(win);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   // Links in messages open in the real browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file:')) { e.preventDefault(); if (/^https?:/i.test(url)) shell.openExternal(url); } });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; webtabs = null; });
 }
 
 // A solid square is enough as the icon that follows the cursor while dragging a file out.
@@ -49,6 +52,9 @@ function knownFile(p) {
 
 function wireIpc() {
   const handle = (name, fn) => ipcMain.handle(name, (_e, ...args) => fn(...args));
+
+  handle('web:show', (key) => webtabs && webtabs.show(key));
+  handle('web:hide', () => webtabs && webtabs.hide());
 
   handle('chats:list', () => hub.listChats());
   handle('chats:open', (id) => hub.openChat(id));
