@@ -308,10 +308,16 @@ class WebTabs {
     const view = new WebContentsView({ webPreferences: { session: ses, preload: path.join(__dirname, 'webpreload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
     view.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
     view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
+    // The chat list of a page that finished loading is read soon, not after the next 3 s tick.
+    view.webContents.on('did-finish-load', () => { setTimeout(() => this.poll(), 1500); setTimeout(() => this.poll(), 5000); });
     this.files.attach(key, view.webContents, ses);
     this.win.contentView.addChildView(view);
-    view.setVisible(false);
+    // A hidden view (setVisible(false)) makes the page report document.hidden: the web clients then do not render
+    // or fill their chat list until the view has been shown once, so chats of services that were never opened were
+    // missing. The view stays visible and is parked off-screen instead (see park/layout).
+    view.setVisible(true);
     this.views.set(key, view);
+    this.park(view);
     return view;
   }
 
@@ -443,14 +449,27 @@ class WebTabs {
       view.webContents.executeJavaScript(`(${LIB})('unfocus')`).catch(() => {});
     }
     view.setVisible(true);
+    view.setBounds(this.onScreen());
     this.win.contentView.addChildView(view); // moves it on top
     view.webContents.focus();
   }
 
   hide() {
     const v = this.views.get(this.currentKey);
-    if (v) v.setVisible(false);
+    if (v) this.park(v);
     this.currentKey = null;
+  }
+
+  // Same size as when shown (the page lays out its list normally), but far outside the window.
+  park(view) {
+    view.setVisible(true);
+    const b = this.onScreen();
+    view.setBounds({ ...b, x: -(b.width + 4000), y: 0 });
+  }
+
+  onScreen() {
+    const [w, h] = this.win.getContentSize();
+    return { x: RAIL + SIDEBAR, y: 0, width: Math.max(0, w - RAIL - SIDEBAR), height: h };
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).
@@ -477,9 +496,9 @@ class WebTabs {
   }
 
   layout() {
-    const [w, h] = this.win.getContentSize();
-    const bounds = { x: RAIL + SIDEBAR, y: 0, width: Math.max(0, w - RAIL - SIDEBAR), height: h };
-    for (const v of this.views.values()) v.setBounds(bounds);
+    for (const [key, v] of this.views) {
+      if (key === this.currentKey) v.setBounds(this.onScreen()); else this.park(v);
+    }
   }
 }
 
