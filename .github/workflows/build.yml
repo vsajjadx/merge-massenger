@@ -6,6 +6,9 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      TG_API_ID: ${{ secrets.TG_API_ID }}
+      TG_API_HASH: ${{ secrets.TG_API_HASH }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -13,6 +16,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Bundle Telegram credentials
+        if: env.TG_API_ID != '' && env.TG_API_HASH != ''
+        shell: bash
+        run: echo "{\"apiId\":$TG_API_ID,\"apiHash\":\"$TG_API_HASH\"}" > src/main/tg-config.json
       - run: npm run dist
       - uses: actions/upload-artifact@v4
         with:

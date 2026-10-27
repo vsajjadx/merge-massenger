@@ -6,6 +6,9 @@ const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const { CustomFile } = require('telegram/client/uploads');
 
+let bundled = {};
+try { bundled = require('../tg-config.json'); } catch { /* no bundled credentials: fall back to the manual form */ }
+
 const displayName = (e) => (e && (e.title || [e.firstName, e.lastName].filter(Boolean).join(' ') || e.username)) || '';
 
 class TelegramAdapter extends EventEmitter {
@@ -38,8 +41,8 @@ class TelegramAdapter extends EventEmitter {
 
   async start() {
     if (this.client) return;
-    const apiId = Number(this.secrets.get('tg.apiId'));
-    const apiHash = this.secrets.get('tg.apiHash');
+    const apiId = Number(bundled.apiId || this.secrets.get('tg.apiId'));
+    const apiHash = bundled.apiHash || this.secrets.get('tg.apiHash');
     if (!apiId || !apiHash) return this.setStatus('need_config');
 
     this.setStatus('connecting');
