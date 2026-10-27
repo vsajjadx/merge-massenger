@@ -309,8 +309,7 @@ function accountHtml(source, title, s) {
   const ok = s.state === 'ready';
   let body = '';
   if (s.state === 'need_config') {
-    body = `<p>Create an app at my.telegram.org to get these two values. They stay on this computer.</p>
-      <form data-form="${source}:config"><input name="apiId" placeholder="api_id" inputmode="numeric" required><input name="apiHash" placeholder="api_hash" required><button class="btn">Continue</button></form>`;
+    body = `<p>Sign in to Telegram with the Telegram button on the left rail (phone number and code, no api_id).</p>`;
   } else if (s.state === 'need_phone') {
     body = `<form data-form="${source}:phone"><input name="v" placeholder="Phone number with country code" required><button class="btn">Send code</button></form>`;
   } else if (s.state === 'need_code') {
@@ -372,7 +371,7 @@ api.onHistory(async (id) => {
 api.onStatus((s) => {
   state.statuses[s.source] = s;
   renderAccounts();
-  if (s.state.startsWith('need_') && $('#modal').hidden) openModal(); // login input needed
+  if (s.state.startsWith('need_') && s.state !== 'need_config' && $('#modal').hidden) openModal(); // login input needed
 });
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
@@ -391,5 +390,5 @@ $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved
   state.statuses = await api.statuses();
   renderList();
   renderAccounts();
-  if (Object.values(state.statuses).some((s) => s.state.startsWith('need_'))) openModal();
+  if (Object.values(state.statuses).some((s) => s.state.startsWith('need_') && s.state !== 'need_config')) openModal();
 })();

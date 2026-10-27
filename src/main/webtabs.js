@@ -5,6 +5,7 @@ const { app, session, shell, WebContentsView } = require('electron');
 // Official web clients of the Iranian messengers, each in its own persistent session
 // so the login (phone number + code, typed into the service's own page) survives restarts.
 const SERVICES = {
+  tg: 'https://web.telegram.org/k/',
   ei: 'https://web.eitaa.com/',
   ba: 'https://web.bale.ai/',
   ru: 'https://web.rubika.ir/',
