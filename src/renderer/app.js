@@ -54,6 +54,87 @@ function toast(text) {
 }
 const guard = (p) => p.catch((e) => toast(e.message || e));
 
+// ---------- dates of web chats ----------
+// The web clients only show a short label next to each chat (a clock time, a weekday, a date in the
+// Gregorian or the Jalali calendar). It is turned into a real timestamp so the chats of all services
+// can be put in one order by date.
+function jalaliToGregorian(jy, jm, jd) {
+  jy += 1595;
+  let days = -355668 + 365 * jy + Math.floor(jy / 33) * 8 + Math.floor(((jy % 33) + 3) / 4) + jd + (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+  let gy = 400 * Math.floor(days / 146097);
+  days %= 146097;
+  if (days > 36524) { gy += 100 * Math.floor(--days / 36524); days %= 36524; if (days >= 365) days++; }
+  gy += 4 * Math.floor(days / 1461);
+  days %= 1461;
+  if (days > 365) { gy += Math.floor((days - 1) / 365); days = (days - 1) % 365; }
+  let gd = days + 1;
+  const leap = (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0;
+  const len = [0, 31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  let gm = 1;
+  while (gm <= 12 && gd > len[gm]) gd -= len[gm++];
+  return [gy, gm, gd];
+}
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const WEEKDAYS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, یکشنبه: 0, دوشنبه: 1, سهشنبه: 2, چهارشنبه: 3, پنجشنبه: 4, جمعه: 5, شنبه: 6 };
+const dayFirst = (() => {
+  try {
+    const order = new Intl.DateTimeFormat(navigator.language).formatToParts(new Date(2000, 10, 25)).filter((p) => p.type === 'day' || p.type === 'month').map((p) => p.type);
+    return order[0] === 'day';
+  } catch { return false; }
+})();
+
+// Returns { ts, exact } with ts in seconds; exact is false when the label said nothing about the day.
+function webTimestamp(label, rank) {
+  const now = new Date();
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = dayStart(now);
+  const sec = (d) => d.getTime() / 1000;
+  // date only: noon minus the rank keeps the order the service itself shows within that day
+  const atDay = (d) => sec(d) + 43200 - rank;
+  const t = String(label || '').trim();
+  let m = /^(\d{1,2}):(\d{2})\s?([ap]m)?$/i.exec(t);
+  if (m) {
+    let h = Number(m[1]);
+    if (m[3] && /pm/i.test(m[3]) && h < 12) h += 12;
+    if (m[3] && /am/i.test(m[3]) && h === 12) h = 0;
+    return { ts: sec(today) + h * 3600 + Number(m[2]) * 60, exact: true };
+  }
+  const key = t.toLowerCase().replace(/[\u200c\s.]/g, '');
+  if (key === 'today' || key === 'امروز') return { ts: atDay(today), exact: true };
+  if (key === 'yesterday' || key === 'دیروز') return { ts: atDay(new Date(today.getTime() - 864e5)), exact: true };
+  if (key in WEEKDAYS) {
+    const back = ((today.getDay() - WEEKDAYS[key] + 6) % 7) + 1; // the latest such day before today
+    return { ts: atDay(new Date(today.getFullYear(), today.getMonth(), today.getDate() - back)), exact: true };
+  }
+  m = /^(\d{1,4})[\/.\-](\d{1,2})(?:[\/.\-](\d{1,4}))?$/.exec(t);
+  if (m) {
+    let [a, b, c] = [Number(m[1]), Number(m[2]), m[3] === undefined ? null : Number(m[3])];
+    let y, mo, d;
+    if (m[1].length === 4 || a > 31) { y = a; mo = b; d = c || 1; }           // year first
+    else if (c === null) { mo = dayFirst ? b : a; d = dayFirst ? a : b; y = now.getFullYear(); } // day and month only
+    else {
+      y = c < 100 ? 2000 + c : c;
+      if (a > 12) { d = a; mo = b; } else if (b > 12) { mo = a; d = b; } else if (dayFirst) { d = a; mo = b; } else { mo = a; d = b; }
+    }
+    if (y >= 1300 && y < 1700) [y, mo, d] = jalaliToGregorian(y, mo, d);
+    const date = new Date(y, mo - 1, d);
+    if (!isNaN(date)) return { ts: atDay(date), exact: true };
+  }
+  m = /^(\d{1,2})\s?([a-z]{3,})\.?(?:\s(\d{2,4}))?$/i.exec(t) || (() => { const x = /^([a-z]{3,})\.?\s(\d{1,2})(?:,?\s(\d{2,4}))?$/i.exec(t); return x && [x[0], x[2], x[1], x[3]]; })();
+  if (m) {
+    const mi = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase());
+    if (mi >= 0) {
+      let y = m[3] ? Number(m[3]) : now.getFullYear();
+      if (y < 100) y += 2000;
+      let date = new Date(y, mi, Number(m[1]));
+      if (!m[3] && date > now) date = new Date(y - 1, mi, Number(m[1]));
+      return { ts: atDay(date), exact: true };
+    }
+  }
+  // unknown label: below today's chats, in the order the service shows them
+  return { ts: sec(today) - (rank + 1) * 60, exact: false };
+}
+
 // ---------- chat list ----------
 function sortedChats() {
   const q = state.search.trim().toLowerCase();
@@ -83,8 +164,42 @@ function renderList() {
         </div></div>`;
     });
     $('#chatList').innerHTML = html || '<div class="c-last" style="padding:20px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
+    renderFeed();
   });
 }
+
+// ---------- "All": every messenger in one list, newest first ----------
+const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
+state.feedFilter = 'all';
+
+function renderFeed() {
+  const base = (c) => c.source.replace(/2$/, '');
+  const all = sortedChats();
+  $('#feedTabs').innerHTML = FEED_TABS.map(([k, label]) => {
+    const list = k === 'all' ? all : all.filter((c) => base(c) === k);
+    const unread = list.reduce((n, c) => n + (c.unread || 0), 0);
+    return `<button class="feed-tab ${state.feedFilter === k ? 'active' : ''}" data-f="${k}">${label}<span class="n">${list.length}</span>${unread ? `<span class="u">${unread}</span>` : ''}</button>`;
+  }).join('');
+  const chats = state.feedFilter === 'all' ? all : all.filter((c) => base(c) === state.feedFilter);
+  let html = '', lastLabel = null;
+  for (const c of chats) {
+    const label = c.approx ? 'Earlier' : dayLabel(c.lastTs);
+    if (label !== lastLabel) { html += `<div class="day">${esc(label)}</div>`; lastLabel = label; }
+    const last = c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText);
+    html += `<div class="chat-item" data-id="${esc(c.id)}">${avatar(c)}<div class="c-body">
+      <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
+      <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : ''}</div></div></div>`;
+  }
+  $('#feedList').innerHTML = html || '<div class="c-last" style="padding:24px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
+}
+$('#feedTabs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-f]');
+  if (b) { state.feedFilter = b.dataset.f; renderFeed(); }
+});
+$('#feedList').addEventListener('click', (e) => {
+  const item = e.target.closest('.chat-item');
+  if (item) openChat(item.dataset.id);
+});
 
 // ---------- messages ----------
 function mediaHtml(m) {
@@ -137,7 +252,7 @@ async function openChat(id) {
   const web = state.chats.get(id);
   if (web && web.web) {
     state.active = id;
-    $('#empty').hidden = true;
+    $('#feed').hidden = true;
     $('#chatView').hidden = true;
     markRail(web.source);
     renderList();
@@ -147,7 +262,7 @@ async function openChat(id) {
   state.pending = [];
   renderPending();
   const chat = state.chats.get(id);
-  $('#empty').hidden = true;
+  $('#feed').hidden = true;
   $('#chatView').hidden = false;
   $('#hAvatar').outerHTML = avatar(chat).replace('class="avatar ', 'id="hAvatar" class="avatar ');
   $('#hTitle').textContent = chat.title;
@@ -390,7 +505,10 @@ api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
 
 function markRail(svc) {
   document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
+  $('#allBtn').classList.toggle('active', !svc);
+  if (!svc) { state.active = null; renderList(); }
 }
+$('#allBtn').onclick = () => { markRail(null); guard(api.hideWeb()); };
 document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
   b.onclick = () => {
     const off = b.classList.contains('active'); // clicking the open service again closes it
@@ -425,21 +543,13 @@ $('#rail').addEventListener('contextmenu', (e) => {
 // Chat lists read from the web clients, merged into the one list.
 api.onWebChats(({ key, chats }) => {
   for (const [id, c] of state.chats) if (c.source === key) state.chats.delete(id);
-  const todayStart = new Date().setHours(0, 0, 0, 0) / 1000;
   const seen = new Map();
   chats.forEach((c, rank) => {
     const n = seen.get(c.title) || 0;
     seen.set(c.title, n + 1);
-    let ts = todayStart - (rank + 1) * 60; // not from today: keeps the service's own order, below today's chats
-    const m = /^(\d{1,2}):(\d{2})\s?([ap]m)?$/i.exec(c.time || '');
-    if (m) {
-      let h = Number(m[1]);
-      if (m[3] && /pm/i.test(m[3]) && h < 12) h += 12;
-      if (m[3] && /am/i.test(m[3]) && h === 12) h = 0;
-      ts = todayStart + h * 3600 + Number(m[2]) * 60;
-    }
+    const { ts, exact } = webTimestamp(c.time, rank);
     const id = `${key}:${c.title}#${n}`;
-    state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, timeText: c.time, unread: c.unread, pinned: false });
+    state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, approx: !exact, timeText: c.time, unread: c.unread, pinned: false });
   });
   renderList();
 });

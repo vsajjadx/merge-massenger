@@ -9,6 +9,7 @@
 <body>
   <div id="app">
     <nav id="rail">
+      <button id="allBtn" class="rail-btn active" title="All messengers in one list, newest first">All</button>
       <button class="rail-btn" data-svc="tg" title="Telegram (right click: second account)">تلگرام</button>
       <button class="rail-btn" data-svc="tg2" title="Telegram, account 2" hidden>تلگرام ۲</button>
       <button class="rail-btn" data-svc="wa" title="WhatsApp (right click: second account)">واتساپ</button>
@@ -33,7 +34,10 @@
     </aside>
 
     <main id="main">
-      <div id="empty">Log in to each service with the buttons on the left. Your chats then appear in the list.</div>
+      <section id="feed">
+        <header id="feedHead"><h2>All</h2><div id="feedTabs"></div></header>
+        <div id="feedList"></div>
+      </section>
       <section id="chatView" hidden>
         <header id="chatHeader">
           <div id="hAvatar" class="avatar"></div>

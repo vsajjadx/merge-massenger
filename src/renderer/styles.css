@@ -54,7 +54,18 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 .src.ei { background: #f58220; } .src.ba { background: #14b8a6; } .src.ru { background: #cc3366; }
 
 #main { flex: 1; position: relative; min-width: 0; display: flex; }
-#empty { margin: auto; color: var(--muted); background: rgba(0,0,0,.18); padding: 6px 14px; border-radius: 16px; }
+#feed { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+#feedHead { padding: 14px 20px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#feedHead h2 { margin: 0 0 8px; font-size: 18px; }
+#feedTabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.feed-tab { border: 0; border-radius: 16px; padding: 5px 12px; background: var(--hover); color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.feed-tab.active { background: var(--active); color: #fff; }
+.feed-tab .n { opacity: .7; font-size: 12px; }
+.feed-tab .u { background: var(--accent); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; line-height: 17px; }
+#feedList { flex: 1; overflow-y: auto; padding: 4px 0 16px; }
+#feedList .day { text-align: center; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
+#feedList .chat-item { margin: 0 14px; background: var(--panel); border-radius: 12px; margin-bottom: 4px; }
+#feedList .chat-item:hover { background: var(--hover); }
 #chatView { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 #chatHeader { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
 #chatHeader .avatar { width: 40px; height: 40px; font-size: 15px; }

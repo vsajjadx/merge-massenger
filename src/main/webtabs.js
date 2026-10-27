@@ -14,7 +14,7 @@ const SERVICES = {
 };
 const SECOND = /^(tg|wa|ei|ba|ru)2$/; // optional second account of a service, own login and session
 const baseOf = (key) => key.replace(/2$/, '');
-const FOCUS = new Set(['ba', 'ru']); // services whose own chat list is moved aside when a chat is opened from our list
+const FOCUS = new Set(['ba', 'ru', 'wa']); // services whose own chat list is moved aside when a chat is opened from our list
 const RAIL = 56;      // service rail, px
 const SIDEBAR = 340;  // unified chat list, px (same as #sidebar in styles.css)
 const POLL_MS = 3000;
@@ -53,23 +53,27 @@ const OUTLINE = function () {
   return out.join('\n');
 }.toString();
 
-// Runs inside each web client. op "list": reads the chat list; op "open": clicks the chat with the given title.
+// Runs inside each web client. op "list": reads the chat list; op "open": clicks the chat with the given title;
+// op "focus" / "unfocus": move the page's own chat list (and icon rail) out of view / back.
 const LIB = function (op, arg) {
   const FA = '۰۱۲۳۴۵۶۷۸۹', AR = '٠١٢٣٤٥٦٧٨٩';
   const norm = (s) => String(s || '').replace(/[۰-۹]/g, (d) => FA.indexOf(d)).replace(/[٠-٩]/g, (d) => AR.indexOf(d)).replace(/\s+/g, ' ').trim();
-  const TIME = /^(\d{1,2}:\d{2}(\s?[ap]m)?|\d{1,4}[\/.\-]\d{1,2}([\/.\-]\d{1,4})?|yesterday|today|mon|tue|wed|thu|fri|sat|sun|دیروز|امروز|شنبه|یکشنبه|دوشنبه|سه‌?شنبه|چهارشنبه|پنج‌?شنبه|جمعه)$/i;
+  const MON = '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?';
+  const TIME = new RegExp('^(\\d{1,2}:\\d{2}(\\s?[ap]m)?|\\d{1,4}[\\/.\\-]\\d{1,2}([\\/.\\-]\\d{1,4})?|' + MON + '\\s\\d{1,2}(,?\\s\\d{2,4})?|\\d{1,2}\\s' + MON + '(\\s\\d{2,4})?|yesterday|today|mon|tue|wed|thu|fri|sat|sun|دیروز|امروز|شنبه|یکشنبه|دوشنبه|سه‌?شنبه|چهارشنبه|پنج‌?شنبه|جمعه)$', 'i');
+  const EDIT = '[contenteditable]:not([contenteditable="false"]), textarea, [role="textbox"]';
 
-  // Telegram-style clients have a known row class; for every other client the chat list is the
-  // narrow column whose children are many similar rows.
+  // Telegram-style clients (Telegram, Eitaa, Rubika) have .peer-title rows; for every other client the
+  // chat list is the column whose children are many similar rows.
   function rows() {
-    const known = document.querySelectorAll('.chatlist-chat');
-    if (known.length) return [...known];
+    const known = [...document.querySelectorAll('.chatlist-chat, #chatlist-container ul.chatlist > li, #folders-container ul.chatlist > li')]
+      .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'));
+    if (known.length) return known;
     let best = null;
     for (const p of document.querySelectorAll('div, ul, section')) {
       const kids = p.children;
       if (kids.length < 4 || kids.length > 400) continue;
       const r = p.getBoundingClientRect();
-      if (r.width < 150 || r.width > innerWidth * 0.6 || r.height < 200) continue;
+      if (r.width < 150 || r.width > innerWidth * 0.95 || r.height < 200) continue;
       const tag = kids[0].tagName;
       let same = 0, text = 0;
       for (const k of kids) { if (k.tagName === tag) same++; if (norm(k.innerText)) text++; }
@@ -82,7 +86,7 @@ const LIB = function (op, arg) {
   }
 
   function parse(row) {
-    if (row.classList.contains('chatlist-chat')) {
+    if (row.querySelector('.peer-title')) {
       const q = (s) => norm((row.querySelector(s) || {}).textContent);
       const title = q('.peer-title');
       return title ? { title, last: q('.user-last-message'), time: q('.message-time'), unread: parseInt(q('.dialog-subtitle-badge')) || 0 } : null;
@@ -100,26 +104,59 @@ const LIB = function (op, arg) {
     return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread };
   }
 
-  // Bale and Rubika show their own chat list next to the open chat, which would double our list.
-  // "focus" moves that column out of view (it stays rendered, so the list can still be read),
-  // "unfocus" puts it back for when the service is opened with its button.
+  // The innermost element that holds the title: clicks must start there, because the page's own click
+  // handler often sits on an inner element of the row (Bale, WhatsApp) and an event fired on the outer
+  // row never travels down to it.
+  function clickTarget(row, title) {
+    const pt = row.querySelector('.peer-title');
+    if (pt) return pt;
+    const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode());) if (norm(n.textContent) === title && n.parentElement) return n.parentElement;
+    return row;
+  }
+
+  // The message box of the open chat: an input that lies beside the chat list, not above or below it
+  // (the search box of the list is an input too and must not count).
+  function composer(list) {
+    const lr = list.getBoundingClientRect();
+    return [...document.querySelectorAll(EDIT)].find((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && (r.right <= lr.left + 1 || r.left >= lr.right - 1);
+    }) || null;
+  }
+
+  // Bale, Rubika and WhatsApp show their own chat list next to the open chat, which would double our list.
+  // "focus" moves that column (and the narrow icon rail beside it) out of view; it stays rendered, so the
+  // list can still be read. "unfocus" puts everything back for when the service is opened with its button.
   if (op === 'focus') {
+    const cur = document.querySelector('[data-um-col]');
+    if (cur && cur.isConnected) return true;
     const list = (rows()[0] || {}).parentElement;
     if (!list) return false;
+    const comp = composer(list);
+    if (!comp) return false; // no chat is open yet, nothing to make room for
     const lw = list.getBoundingClientRect().width;
     let col = list;
-    while (col.parentElement && col.parentElement !== document.body) {
+    while (col.parentElement && col.parentElement !== document.body && col.parentElement !== document.documentElement) {
       const par = col.parentElement;
-      if (par.querySelector('[contenteditable="true"], textarea')) break;
-      if (par.getBoundingClientRect().width > lw * 1.5) break;
+      if (par.contains(comp)) break;
+      if (par.getBoundingClientRect().width > lw * 1.6) break;
       col = par;
     }
-    if (col.dataset.umCol) return true;
+    if (col.contains(comp)) return false;
     const box = col.getBoundingClientRect();
+    const par = col.parentElement;
+    for (const sib of par.children) {
+      if (sib === col || sib.contains(comp)) continue;
+      const r = sib.getBoundingClientRect();
+      if (r.width > 0 && r.width <= 140 && r.height > innerHeight * 0.5 && !sib.querySelector(EDIT)) {
+        sib.dataset.umHide = sib.getAttribute('style') || '';
+        sib.style.setProperty('display', 'none', 'important');
+      }
+    }
     col.dataset.umCol = '1';
     col.dataset.umStyle = col.getAttribute('style') || '';
     col.style.cssText += `;position:fixed !important;left:-${Math.ceil(box.width) + 50}px !important;top:0 !important;width:${box.width}px !important;height:${innerHeight}px !important;`;
-    const par = col.parentElement;
     if (par && getComputedStyle(par).display.includes('grid')) {
       par.dataset.umGrid = par.getAttribute('style') || '';
       par.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
@@ -132,6 +169,7 @@ const LIB = function (op, arg) {
       if (old) el.setAttribute('style', old); else el.removeAttribute('style');
       delete el.dataset[attr];
     };
+    for (const el of document.querySelectorAll('[data-um-hide]')) restore(el, 'umHide');
     const col = document.querySelector('[data-um-col]');
     if (col) { restore(col, 'umStyle'); delete col.dataset.umCol; }
     const grid = document.querySelector('[data-um-grid]');
@@ -144,8 +182,13 @@ const LIB = function (op, arg) {
   const hits = items.filter((x) => x.chat.title === arg.title);
   const target = hits[arg.n] || hits[0];
   if (!target) return false;
+  const el = clickTarget(target.el, target.chat.title);
+  const r = el.getBoundingClientRect();
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, detail: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    target.el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, button: 0 }));
+    const down = t.endsWith('down');
+    const init = { ...base, buttons: down ? 1 : 0 };
+    el.dispatchEvent(t.startsWith('pointer') ? new PointerEvent(t, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }) : new MouseEvent(t, init));
   }
   return true;
 }.toString();
@@ -159,6 +202,7 @@ class WebTabs {
     this.views = new Map();
     this.last = new Map();
     this.currentKey = null;
+    this.focused = new Set(); // services opened from our list: their own list stays out of view
     this.timer = null;
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
@@ -197,6 +241,8 @@ class WebTabs {
   async poll() {
     for (const [key, view] of this.views) {
       if (view.webContents.isDestroyed() || view.webContents.isLoading()) continue;
+      // The page may re-render and drop the moved column: keep it out of the way while a chat is open.
+      if (this.focused.has(key)) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
       let chats = [];
       try { chats = (await view.webContents.executeJavaScript(`(${LIB})('list')`)) || []; } catch { /* page not ready */ }
       const json = JSON.stringify(chats);
@@ -223,6 +269,7 @@ class WebTabs {
     view.webContents.close();
     this.views.delete(key);
     this.last.delete(key);
+    this.focused.delete(key);
     this.onChats(key, []);
     return this.saveExtra();
   }
@@ -239,7 +286,15 @@ class WebTabs {
     const view = this.views.get(key);
     const ok = await view.webContents.executeJavaScript(`(${LIB})('open', ${JSON.stringify({ title, n: n || 0 })})`);
     if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
-    if (FOCUS.has(baseOf(key))) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
+    if (FOCUS.has(baseOf(key))) {
+      this.focused.add(key);
+      // The chat takes a moment to appear; the list can only be moved aside once its message box exists.
+      for (let i = 0; i < 16; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        if (view.webContents.isDestroyed()) return;
+        if (await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => false)) break;
+      }
+    }
   }
 
   // restore: opened with its own button, so the service's full page (with its own list) is shown
@@ -248,7 +303,10 @@ class WebTabs {
     this.hide();
     this.currentKey = key;
     const view = this.views.get(key);
-    if (restore && FOCUS.has(baseOf(key))) view.webContents.executeJavaScript(`(${LIB})('unfocus')`).catch(() => {});
+    if (restore && FOCUS.has(baseOf(key))) {
+      this.focused.delete(key);
+      view.webContents.executeJavaScript(`(${LIB})('unfocus')`).catch(() => {});
+    }
     view.setVisible(true);
     this.win.contentView.addChildView(view); // moves it on top
     view.webContents.focus();
