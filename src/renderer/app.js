@@ -485,7 +485,12 @@ async function refreshCache() {
   $('#cacheInfo').textContent = `Downloaded files: ${size(c.bytes) || '0 B'} of ${size(c.max)}`;
 }
 function openModal() { $('#modal').hidden = false; renderAccounts(); refreshCache(); }
-$('#accountsBtn').onclick = openModal;
+// Inside a messenger (its page covers the window, so a dialog could not be seen) the button goes straight to
+// that messenger's own settings; on All it opens the Messengers menu.
+$('#accountsBtn').onclick = () => {
+  if (state.rail) guard(api.openWebSettings(state.rail));
+  else openModal();
+};
 $('#closeModal').onclick = () => ($('#modal').hidden = true);
 $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
 $('#clearCache').onclick = async () => {
@@ -526,6 +531,7 @@ api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
 function markRail(svc) {
   document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
   $('#allBtn').classList.toggle('active', !svc);
+  state.rail = svc || null; // the service whose page is open, null on All
   if (!svc) { state.active = null; renderList(); }
 }
 $('#allBtn').onclick = () => { markRail(null); guard(api.hideWeb()); };
