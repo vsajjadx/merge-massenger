@@ -105,12 +105,12 @@ const LIB = function (op, arg) {
     return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread };
   }
 
-  // Where the click starts. Telegram-style rows (Telegram, Eitaa, Rubika) are clicked on the row itself:
-  // a click on the .peer-title inside opens the profile instead of the chat. For the other clients the
-  // page's own click handler sits on an inner element of the row (Bale, WhatsApp), so the click starts at
-  // the innermost element holding the title and travels up from there.
+  // Where the click starts. The page's own click handler often sits on an inner element of the row, so an
+  // event fired on the row itself never reaches it: the click starts at an inner element and travels up.
+  // Telegram-style rows use the text block (a click on the .peer-title opens the profile in Rubika, a
+  // click on the row does nothing); the other clients use the innermost element holding the title.
   function clickTarget(row, title) {
-    if (row.querySelector('.peer-title')) return row;
+    if (row.querySelector('.peer-title')) return row.querySelector('.user-caption') || row;
     const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
     for (let n; (n = w.nextNode());) if (norm(n.textContent) === title && n.parentElement) return n.parentElement;
     return row;
@@ -181,12 +181,22 @@ const LIB = function (op, arg) {
     return true;
   }
 
+  if (op === 'chatopen') {
+    const list = (rows()[0] || {}).parentElement;
+    return !!(list && composer(list));
+  }
+
   const items = rows().map((el) => ({ el, chat: parse(el) })).filter((x) => x.chat).slice(0, 80);
   if (op === 'list') return items.map((x) => x.chat);
   const hits = items.filter((x) => x.chat.title === arg.title);
   const target = hits[arg.n] || hits[0];
   if (!target) return false;
   const el = clickTarget(target.el, target.chat.title);
+  if (op === 'rect') { // where a real mouse click has to land
+    el.scrollIntoView({ block: 'nearest' });
+    const q = el.getBoundingClientRect();
+    return q.width > 0 && q.height > 0 ? { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2) } : null;
+  }
   const r = el.getBoundingClientRect();
   const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, detail: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
@@ -295,6 +305,18 @@ class WebTabs {
     if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
     if (FOCUS.has(baseOf(key))) {
       this.focused.add(key);
+      const wc = view.webContents;
+      await new Promise((r) => setTimeout(r, 700));
+      // Some clients ignore the click made from the page; then a real mouse click is sent to the row.
+      const isOpen = await wc.executeJavaScript(`(${LIB})('chatopen')`).catch(() => true);
+      if (!isOpen) {
+        const pt = await wc.executeJavaScript(`(${LIB})('rect', ${JSON.stringify({ title, n: n || 0 })})`).catch(() => null);
+        if (pt) {
+          wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
+          wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        }
+      }
       // The chat takes a moment to appear; the list can only be moved aside once its message box exists.
       for (let i = 0; i < 16; i++) {
         await new Promise((r) => setTimeout(r, 250));
