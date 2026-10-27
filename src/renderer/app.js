@@ -606,6 +606,25 @@ api.onWebChats(({ key, chats }) => {
   renderList();
 });
 
+// Logos of Eitaa, Bale and Rubika: the favicon of each service's own page, remembered between runs.
+let icons = {};
+try { icons = JSON.parse(localStorage.getItem('icons') || '{}'); } catch { icons = {}; }
+function applyIcon(key, url) {
+  document.querySelectorAll(`.rail-btn[data-svc="${key}"] .logo img, .rail-btn[data-svc="${key}2"] .logo img`).forEach((img) => {
+    img.onerror = () => { img.hidden = true; };
+    img.onload = () => { img.hidden = false; };
+    img.src = url;
+  });
+}
+for (const [k, u] of Object.entries(icons)) applyIcon(k, u);
+api.onWebIcon(({ key, url }) => {
+  const base = key.replace(/2$/, '');
+  if (!['ei', 'ba', 'ru'].includes(base)) return; // Telegram and WhatsApp keep their own logos
+  icons[base] = url;
+  try { localStorage.setItem('icons', JSON.stringify(icons)); } catch { /* storage unavailable */ }
+  applyIcon(base, url);
+});
+
 $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
 
 (async function init() {

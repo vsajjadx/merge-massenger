@@ -21,6 +21,19 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 #rail { overflow-y: auto; width: 56px; flex: none; background: var(--bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; }
 .rail-btn { width: 44px; height: 44px; border: 0; border-radius: 12px; background: none; color: var(--muted); font-size: 11px; font-weight: 600; }
 .rail-btn#inspectBtn { margin-top: auto; }
+.rail-btn { position: relative; display: grid; place-items: center; padding: 0; }
+.rail-btn .logo { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; overflow: hidden; color: #fff; }
+.rail-btn .logo svg { width: 18px; height: 18px; fill: #fff; }
+.rail-btn .logo b { font-size: 15px; font-weight: 700; }
+.rail-btn .logo { position: relative; }
+.rail-btn .logo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; background: #fff; }
+.rail-btn .logo.tg { background: #26a5e4; }
+.rail-btn .logo.wa { background: #25d366; }
+.rail-btn .logo.ei { background: #f58220; }
+.rail-btn .logo.ba { background: #1fb58f; }
+.rail-btn .logo.ru { background: #8e3fc4; }
+.rail-btn .two { position: absolute; right: 3px; bottom: 3px; min-width: 14px; height: 14px; border-radius: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--line); font: 700 9px/12px system-ui, sans-serif; text-align: center; font-style: normal; }
+.rail-btn.active .logo { box-shadow: 0 0 0 2px #fff; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
 .rail-btn.active { background: var(--active); color: #fff; }
 #sidebar { width: 340px; min-width: 340px; flex: none; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; }

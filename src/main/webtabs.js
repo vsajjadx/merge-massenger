@@ -268,11 +268,12 @@ const LIB = function (op, arg) {
 }.toString();
 
 class WebTabs {
-  constructor(win, onChats, onAccounts, onNotice) {
+  constructor(win, onChats, onAccounts, onNotice, onIcon) {
     this.win = win;
     this.files = webFiles(onNotice || (() => {}));
     this.onChats = onChats;
     this.onAccounts = onAccounts;
+    this.onIcon = onIcon || (() => {});
     this.accountsFile = path.join(app.getPath('userData'), 'accounts.json');
     this.views = new Map();
     this.last = new Map();
@@ -327,6 +328,10 @@ class WebTabs {
     view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
     // The chat list of a page that finished loading is read soon, not after the next 3 s tick.
     view.webContents.on('did-finish-load', () => { setTimeout(() => this.poll(), 1500); setTimeout(() => this.poll(), 5000); });
+    view.webContents.on('page-favicon-updated', (_e, icons) => {
+      const url = (icons || []).filter((u) => /^https:/i.test(u)).pop();
+      if (url) this.onIcon(key, url);
+    });
     this.files.attach(key, view.webContents, ses);
     this.win.contentView.addChildView(view);
     // A hidden view (setVisible(false)) makes the page report document.hidden: the web clients then do not render

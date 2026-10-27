@@ -26,7 +26,7 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.setMenuBarVisibility(false);
-  webtabs = new WebTabs(win, (key, chats) => send('web:chats', { key, chats }), (list) => send('web:accounts', list), (text) => send('problem', text));
+  webtabs = new WebTabs(win, (key, chats) => send('web:chats', { key, chats }), (list) => send('web:accounts', list), (text) => send('problem', text), (key, url) => send('web:icon', { key, url }));
   webtabs.start();
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   // Links in messages open in the real browser, never inside the app.
