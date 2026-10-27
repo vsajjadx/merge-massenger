@@ -29,6 +29,13 @@ The date label each web client shows (clock time, weekday, Gregorian or Jalali d
 - Right click a file: Save as, Show in folder. Right click a chat (in the sidebar or in All): Pin to top / Unpin. Pins of web chats are remembered between runs.
 - Drag a downloaded file out of the window to Explorer/Finder or another app. Dragging a file from one chat into another chat forwards it.
 
+## Files from the web clients
+
+- Any download a web client starts (its Download button, or Save in its own right click menu) goes straight to the Desktop, without a dialog.
+- Documents a client fetches on its own (PDF, Word/Excel/PowerPoint and other Office files, ZIP/RAR/7z/TAR, DWG/DXF, TXT/CSV) are saved to the Desktop as soon as they exist, not only the ones you click.
+  The same file is saved once. Videos, audio and pictures are never saved automatically.
+- Drag a picture from a chat out of the window to drop it as a file.
+
 ## Adding another messenger
 
 Copy `src/main/adapters/_template.js`, implement the methods, add an instance to `adapters` in `src/main/main.js`.

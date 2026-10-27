@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { app, session, shell, WebContentsView } = require('electron');
+const { webFiles } = require('./webfiles');
 
 // Official web clients, each in its own persistent session so the login survives restarts.
 // All of them stay loaded in the background: their chat lists are read every few seconds and
@@ -197,8 +198,9 @@ const LIB = function (op, arg) {
 }.toString();
 
 class WebTabs {
-  constructor(win, onChats, onAccounts) {
+  constructor(win, onChats, onAccounts, onNotice) {
     this.win = win;
+    this.files = webFiles(onNotice || (() => {}));
     this.onChats = onChats;
     this.onAccounts = onAccounts;
     this.accountsFile = path.join(app.getPath('userData'), 'accounts.json');
@@ -232,9 +234,10 @@ class WebTabs {
     ses.setUserAgent(ses.getUserAgent().replace(new RegExp(`\\s(Electron|${appToken})/\\S+`, 'gi'), ''));
     ses.setPermissionRequestHandler((_wc, permission, cb) => cb(PERMISSIONS.has(permission)));
 
-    const view = new WebContentsView({ webPreferences: { session: ses, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+    const view = new WebContentsView({ webPreferences: { session: ses, preload: path.join(__dirname, 'webpreload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
     view.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
     view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
+    this.files.attach(key, view.webContents, ses);
     this.win.contentView.addChildView(view);
     view.setVisible(false);
     this.views.set(key, view);
@@ -268,6 +271,7 @@ class WebTabs {
     const view = this.views.get(key);
     if (!SECOND.test(key) || !view) return this.extra();
     if (this.currentKey === key) this.hide();
+    this.files.detach(view.webContents.id);
     this.win.contentView.removeChildView(view);
     view.webContents.close();
     this.views.delete(key);
