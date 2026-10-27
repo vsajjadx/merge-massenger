@@ -220,6 +220,19 @@ const LIB = function (op, arg) {
     return true;
   }
 
+  if (op === 'sig') { // what the page's top area (outside the list) says now: changes when another chat opens
+    const list = (rows()[0] || {}).parentElement;
+    const out = [];
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n, c = 0; (n = w.nextNode()) && c < 3000; c++) {
+      const t = norm(n.textContent);
+      const el = n.parentElement;
+      if (!t || !el || (list && list.contains(el))) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.top < 90 && r.bottom > 0) out.push(t);
+    }
+    return out.join('|');
+  }
   if (op === 'chatopen') {
     const list = (rows()[0] || {}).parentElement;
     return !!(list && composer(list));
@@ -373,26 +386,29 @@ class WebTabs {
       // the chat). If the chat did not change the click is repeated; the second retry first presses Escape to close
       // the open chat, which also brings the list back in the page's narrow layout.
       let opened = false;
+      const sig0 = await call('sig').catch(() => '');
       for (let attempt = 0; attempt < 3 && !opened; attempt++) {
         if (attempt === 2) {
           wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
           wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-          await sleep(300);
+          await sleep(200);
         }
         await call('reveal').catch(() => {});
         let pt = null;
-        for (let i = 0; i < 6; i++) { // the layout needs a moment after the list is forced into view
-          await sleep(i ? 120 : 200);
+        for (let i = 0; i < 10; i++) { // the layout needs a moment after the list is forced into view
+          if (i) await sleep(50);
           pt = await call('rect', arg).catch(() => null);
           if (pt && pt.hit) break;
         }
         if (!pt) throw new Error('Chat not found in the web page, open it from the service button');
         wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
-        await sleep(40);
         wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
         wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-        await sleep(attempt ? 700 : 500);
-        opened = await call('opened', arg).catch(() => true);
+        // Done as soon as the page's top area changed (another chat) or the page marks this chat as open.
+        for (let i = 0; i < 14 && !opened; i++) {
+          await sleep(60);
+          opened = (await call('sig').catch(() => sig0)) !== sig0 || !!(await call('opened', arg).catch(() => true));
+        }
       }
     } else {
       const ok = await call('open', arg);
@@ -408,10 +424,10 @@ class WebTabs {
         if (!isOpen) await click();
       }
       // The chat takes a moment to appear; the list can only be moved aside once its message box exists.
-      for (let i = 0; i < 16; i++) {
-        await sleep(250);
+      for (let i = 0; i < 24; i++) {
         if (wc.isDestroyed()) return;
         if (await call('focus').catch(() => false)) break;
+        await sleep(120);
       }
     }
   }
