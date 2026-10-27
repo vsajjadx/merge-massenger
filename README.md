@@ -1,0 +1,45 @@
+# Unified Messenger
+
+One desktop chat list for WhatsApp and Telegram: newest message first, pinned chats on top,
+drag files in to send, drag downloaded files out to save. Everything runs on your computer, no server.
+
+## Run
+
+```
+npm install
+npm start
+```
+
+Requires Node 22+ for development tooling; the app itself uses the Node bundled in Electron (node:sqlite, no native build step).
+
+## First login
+
+Click the gear button.
+
+- **Telegram**: create an app at https://my.telegram.org to get `api_id` and `api_hash`, enter them, then your phone number and the login code.
+  The session is stored encrypted with the OS keychain (Electron safeStorage).
+- **WhatsApp**: scan the QR code from WhatsApp > Linked devices. This uses the unofficial Baileys library, so keep usage to normal
+  reading and replying. The login files live in the app data folder under `wa-auth` (not encrypted).
+
+## Behaviour
+
+- Text and chat list are stored in a local SQLite database. Files are never downloaded automatically: a card with name and size
+  is shown, a click downloads the file into a cache (2 GB cap, least recently used removed first; "Clear download cache" in the gear dialog).
+- Right click a file: Save as, Show in folder. Right click a chat: Pin, Mark as read.
+- Drag a downloaded file out of the window to Explorer/Finder or another app. Dragging a file from one chat into another chat forwards it.
+
+## Adding another messenger
+
+Copy `src/main/adapters/_template.js`, implement the methods, add an instance to `adapters` in `src/main/main.js`.
+The hub, database and UI need no changes. Two letters in `source` identify the service; the badge colour for a new one goes in `styles.css` (`.src.xx`).
+
+## Layout
+
+```
+src/main/main.js        window, IPC, notifications
+src/main/hub.js         merges adapter events into the store
+src/main/db.js          SQLite (chats, messages, downloaded files)
+src/main/cache.js       download cache with LRU cleanup
+src/main/adapters/      telegram.js (GramJS), whatsapp.js (Baileys), _template.js
+src/renderer/           the UI (plain HTML/CSS/JS, no build step)
+```
