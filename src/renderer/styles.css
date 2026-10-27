@@ -18,7 +18,7 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 [hidden] { display: none !important; }
 
 #app { display: flex; height: 100vh; }
-#rail { width: 56px; flex: none; background: var(--bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; }
+#rail { overflow-y: auto; width: 56px; flex: none; background: var(--bg); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; }
 .rail-btn { width: 44px; height: 44px; border: 0; border-radius: 12px; background: none; color: var(--muted); font-size: 11px; font-weight: 600; }
 .rail-btn#inspectBtn { margin-top: auto; }
 .rail-btn:hover { background: var(--hover); color: var(--text); }
@@ -50,6 +50,7 @@ svg { width: 22px; height: 22px; fill: currentColor; }
 .avatar { position: relative; flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; font-size: 17px; color: #fff; }
 .avatar .src { position: absolute; right: -2px; bottom: -2px; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; line-height: 17px; text-align: center; border: 2px solid var(--side); box-sizing: content-box; margin: -2px -2px 0 0; }
 .src.tg { background: var(--tg); } .src.wa { background: var(--wa); }
+.src.second { width: auto; min-width: 17px; padding: 0 2px; border-radius: 9px; }
 .src.ei { background: #f58220; } .src.ba { background: #14b8a6; } .src.ru { background: #cc3366; }
 
 #main { flex: 1; position: relative; min-width: 0; display: flex; }

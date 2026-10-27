@@ -12,6 +12,8 @@ const SERVICES = {
   ba: 'https://web.bale.ai/',
   ru: 'https://web.rubika.ir/',
 };
+const SECOND = /^(tg|wa|ei|ba|ru)2$/; // optional second account of a service, own login and session
+const baseOf = (key) => key.replace(/2$/, '');
 const RAIL = 56;      // service rail, px
 const SIDEBAR = 340;  // unified chat list, px (same as #sidebar in styles.css)
 const POLL_MS = 3000;
@@ -109,9 +111,11 @@ const LIB = function (op, arg) {
 }.toString();
 
 class WebTabs {
-  constructor(win, onChats) {
+  constructor(win, onChats, onAccounts) {
     this.win = win;
     this.onChats = onChats;
+    this.onAccounts = onAccounts;
+    this.accountsFile = path.join(app.getPath('userData'), 'accounts.json');
     this.views = new Map();
     this.last = new Map();
     this.currentKey = null;
@@ -127,7 +131,9 @@ class WebTabs {
   }
 
   start() {
-    for (const key of Object.keys(SERVICES)) this.create(key);
+    let extra = [];
+    try { extra = JSON.parse(fs.readFileSync(this.accountsFile, 'utf8')).filter((k) => SECOND.test(k)); } catch { /* none enabled yet */ }
+    for (const key of [...Object.keys(SERVICES), ...extra]) this.create(key);
     this.layout();
     this.timer = setInterval(() => this.poll(), POLL_MS);
   }
@@ -141,7 +147,7 @@ class WebTabs {
 
     const view = new WebContentsView({ webPreferences: { session: ses, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
     view.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
-    view.webContents.loadURL(SERVICES[key]).catch(() => {});
+    view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
     this.win.contentView.addChildView(view);
     view.setVisible(false);
     this.views.set(key, view);
@@ -160,6 +166,34 @@ class WebTabs {
     }
   }
 
+  extra() { return [...this.views.keys()].filter((k) => SECOND.test(k)); }
+
+  enable(key) {
+    if (!SECOND.test(key) || this.views.has(key)) return this.extra();
+    this.create(key);
+    this.layout();
+    return this.saveExtra();
+  }
+
+  disable(key) {
+    const view = this.views.get(key);
+    if (!SECOND.test(key) || !view) return this.extra();
+    if (this.currentKey === key) this.hide();
+    this.win.contentView.removeChildView(view);
+    view.webContents.close();
+    this.views.delete(key);
+    this.last.delete(key);
+    this.onChats(key, []);
+    return this.saveExtra();
+  }
+
+  saveExtra() {
+    const list = this.extra();
+    fs.writeFileSync(this.accountsFile, JSON.stringify(list));
+    this.onAccounts(list);
+    return list;
+  }
+
   async open(key, title, n) {
     this.show(key);
     const view = this.views.get(key);
@@ -168,7 +202,7 @@ class WebTabs {
   }
 
   show(key) {
-    if (!SERVICES[key]) return;
+    if (!this.views.has(key)) return;
     this.hide();
     this.currentKey = key;
     const view = this.views.get(key);

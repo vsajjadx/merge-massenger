@@ -37,8 +37,10 @@ function dayLabel(ts) {
 function hue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
 function avatar(chat, extra = '') {
   const initials = (chat.title || '?').trim().split(/\s+/).slice(0, 2).map((w) => [...w][0]).join('').toUpperCase() || '?';
-  const src = { tg: 'T', wa: 'W', ei: 'E', ba: 'B', ru: 'R' }[chat.source] || '?';
-  return `<div class="avatar ${extra}" style="background:hsl(${hue(chat.id)} 45% 42%)">${esc(initials)}<span class="src ${chat.source}">${src}</span></div>`;
+  const base = chat.source.replace(/2$/, '');
+  const second = base !== chat.source;
+  const src = ({ tg: 'T', wa: 'W', ei: 'E', ba: 'B', ru: 'R' }[base] || '?') + (second ? '2' : '');
+  return `<div class="avatar ${extra}" style="background:hsl(${hue(chat.id)} 45% 42%)">${esc(initials)}<span class="src ${base} ${second ? 'second' : ''}">${src}</span></div>`;
 }
 const PIN = '<svg class="pin" viewBox="0 0 24 24"><path d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5a3 3 0 0 1-2 2.8V13h5v7l1 2 1-2v-7h5v-1.2A3 3 0 0 1 16 9z"/></svg>';
 
@@ -395,6 +397,29 @@ document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
     markRail(off ? null : b.dataset.svc);
     guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc));
   };
+});
+
+// Optional second account per service: right click a service button to add or remove it.
+state.extra = new Set();
+function applyAccounts(list) {
+  state.extra = new Set(list);
+  document.querySelectorAll('.rail-btn[data-svc$="2"]').forEach((b) => { b.hidden = !state.extra.has(b.dataset.svc); });
+}
+api.onAccounts(applyAccounts);
+api.accounts().then(applyAccounts);
+$('#rail').addEventListener('contextmenu', (e) => {
+  const b = e.target.closest('.rail-btn[data-svc]');
+  if (!b) return;
+  e.preventDefault();
+  const second = b.dataset.svc.replace(/2$/, '') + '2';
+  const on = state.extra.has(second);
+  showMenu(e.clientX, e.clientY, [{
+    label: on ? 'Remove second account' : 'Add second account',
+    run: () => {
+      if (on && document.querySelector(`.rail-btn[data-svc="${second}"]`).classList.contains('active')) markRail(null);
+      guard(api.setAccount(second, !on));
+    },
+  }]);
 });
 
 // Chat lists read from the web clients, merged into the one list.
