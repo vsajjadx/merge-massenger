@@ -14,6 +14,7 @@ const SERVICES = {
 };
 const SECOND = /^(tg|wa|ei|ba|ru)2$/; // optional second account of a service, own login and session
 const baseOf = (key) => key.replace(/2$/, '');
+const FOCUS = new Set(['ba', 'ru']); // services whose own chat list is moved aside when a chat is opened from our list
 const RAIL = 56;      // service rail, px
 const SIDEBAR = 340;  // unified chat list, px (same as #sidebar in styles.css)
 const POLL_MS = 3000;
@@ -97,6 +98,45 @@ const LIB = function (op, arg) {
     if (i >= 0) time = texts.splice(i, 1)[0];
     if (texts.length > 1 && /^\d{1,3}\+?$/.test(texts[texts.length - 1])) unread = parseInt(texts.pop());
     return { title, last: texts.sort((a, b) => b.length - a.length)[0] || '', time, unread };
+  }
+
+  // Bale and Rubika show their own chat list next to the open chat, which would double our list.
+  // "focus" moves that column out of view (it stays rendered, so the list can still be read),
+  // "unfocus" puts it back for when the service is opened with its button.
+  if (op === 'focus') {
+    const list = (rows()[0] || {}).parentElement;
+    if (!list) return false;
+    const lw = list.getBoundingClientRect().width;
+    let col = list;
+    while (col.parentElement && col.parentElement !== document.body) {
+      const par = col.parentElement;
+      if (par.querySelector('[contenteditable="true"], textarea')) break;
+      if (par.getBoundingClientRect().width > lw * 1.5) break;
+      col = par;
+    }
+    if (col.dataset.umCol) return true;
+    const box = col.getBoundingClientRect();
+    col.dataset.umCol = '1';
+    col.dataset.umStyle = col.getAttribute('style') || '';
+    col.style.cssText += `;position:fixed !important;left:-${Math.ceil(box.width) + 50}px !important;top:0 !important;width:${box.width}px !important;height:${innerHeight}px !important;`;
+    const par = col.parentElement;
+    if (par && getComputedStyle(par).display.includes('grid')) {
+      par.dataset.umGrid = par.getAttribute('style') || '';
+      par.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+    }
+    return true;
+  }
+  if (op === 'unfocus') {
+    const restore = (el, attr) => {
+      const old = el.dataset[attr];
+      if (old) el.setAttribute('style', old); else el.removeAttribute('style');
+      delete el.dataset[attr];
+    };
+    const col = document.querySelector('[data-um-col]');
+    if (col) { restore(col, 'umStyle'); delete col.dataset.umCol; }
+    const grid = document.querySelector('[data-um-grid]');
+    if (grid) restore(grid, 'umGrid');
+    return true;
   }
 
   const items = rows().map((el) => ({ el, chat: parse(el) })).filter((x) => x.chat).slice(0, 80);
@@ -195,17 +235,20 @@ class WebTabs {
   }
 
   async open(key, title, n) {
-    this.show(key);
+    this.show(key, false);
     const view = this.views.get(key);
     const ok = await view.webContents.executeJavaScript(`(${LIB})('open', ${JSON.stringify({ title, n: n || 0 })})`);
     if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
+    if (FOCUS.has(baseOf(key))) await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => {});
   }
 
-  show(key) {
+  // restore: opened with its own button, so the service's full page (with its own list) is shown
+  show(key, restore = true) {
     if (!this.views.has(key)) return;
     this.hide();
     this.currentKey = key;
     const view = this.views.get(key);
+    if (restore && FOCUS.has(baseOf(key))) view.webContents.executeJavaScript(`(${LIB})('unfocus')`).catch(() => {});
     view.setVisible(true);
     this.win.contentView.addChildView(view); // moves it on top
     view.webContents.focus();
