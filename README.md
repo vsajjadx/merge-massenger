@@ -12,17 +12,10 @@ npm start
 
 Requires Node 22+ for development tooling; the app itself uses the Node bundled in Electron (node:sqlite, no native build step).
 
-## First login
+## Login
 
-Click the gear button.
-
-- **Telegram**: create an app at https://my.telegram.org to get `api_id` and `api_hash`, enter them, then your phone number and the login code.
-  The session is stored encrypted with the OS keychain (Electron safeStorage).
-- **WhatsApp**: scan the QR code from WhatsApp > Linked devices. This uses the unofficial Baileys library, so keep usage to normal
-  reading and replying. The login files live in the app data folder under `wa-auth` (not encrypted).
-
-- **Eitaa, Bale, Rubika**: use the buttons on the left rail. Each opens the service's official web client (web.eitaa.com, web.bale.ai, web.rubika.ir)
-  inside the app; log in there with your phone number and code. The login is kept between runs. These chats are not merged into the main list.
+Each service opens its own official web client from the left rail (Telegram, WhatsApp, Eitaa, Bale, Rubika). Log in on the service's own page;
+the login is kept between runs. No API keys are needed.
 
 ## Behaviour
 

@@ -385,6 +385,8 @@ document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
 
 $('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
 
+api.showWeb('tg').catch(() => {}); // opens on the first service
+
 (async function init() {
   state.chats = new Map((await api.listChats()).map((c) => [c.id, c]));
   state.statuses = await api.statuses();

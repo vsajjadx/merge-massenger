@@ -4,9 +4,6 @@ const path = require('path');
 const { Store } = require('./db');
 const { DownloadCache } = require('./cache');
 const { Hub } = require('./hub');
-const secrets = require('./secrets');
-const { TelegramAdapter } = require('./adapters/telegram');
-const { WhatsAppAdapter } = require('./adapters/whatsapp');
 const { WebTabs } = require('./webtabs');
 
 const CACHE_LIMIT = 2 * 1024 * 1024 * 1024; // 2 GB, least recently used files are removed first
@@ -98,10 +95,7 @@ app.whenReady().then(async () => {
   cache = new DownloadCache(path.join(data, 'downloads'), store, CACHE_LIMIT);
   hub = new Hub({
     store, cache,
-    adapters: [
-      new TelegramAdapter({ secrets }),
-      new WhatsAppAdapter({ authDir: path.join(data, 'wa-auth') }),
-    ],
+    adapters: [], // every service runs as its own web client, see webtabs.js
   });
 
   hub.on('chat', (c) => send('chat', c));
