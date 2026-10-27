@@ -135,6 +135,19 @@ function webTimestamp(label, rank) {
   return { ts: sec(today) - (rank + 1) * 60, exact: false };
 }
 
+// ---------- pinned chats of the web clients (kept in this window's local storage) ----------
+let pins = [];
+try { pins = JSON.parse(localStorage.getItem('pins') || '[]'); } catch { pins = []; }
+function applyPin(c) { const i = pins.indexOf(c.id); c.pinned = i >= 0; c.pinOrder = i >= 0 ? i : 0; }
+function togglePin(id) {
+  const i = pins.indexOf(id);
+  if (i >= 0) pins.splice(i, 1); else pins.push(id);
+  try { localStorage.setItem('pins', JSON.stringify(pins)); } catch { /* storage unavailable */ }
+  const c = state.chats.get(id);
+  if (c) applyPin(c);
+  renderList();
+}
+
 // ---------- chat list ----------
 function sortedChats() {
   const q = state.search.trim().toLowerCase();
@@ -183,12 +196,12 @@ function renderFeed() {
   const chats = state.feedFilter === 'all' ? all : all.filter((c) => base(c) === state.feedFilter);
   let html = '', lastLabel = null;
   for (const c of chats) {
-    const label = c.approx ? 'Earlier' : dayLabel(c.lastTs);
+    const label = c.pinned ? 'Pinned' : c.approx ? 'Earlier' : dayLabel(c.lastTs);
     if (label !== lastLabel) { html += `<div class="day">${esc(label)}</div>`; lastLabel = label; }
     const last = c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText);
     html += `<div class="chat-item" data-id="${esc(c.id)}">${avatar(c)}<div class="c-body">
       <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
-      <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : ''}</div></div></div>`;
+      <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : c.pinned ? PIN : ''}</div></div></div>`;
   }
   $('#feedList').innerHTML = html || '<div class="c-last" style="padding:24px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
 }
@@ -391,16 +404,18 @@ function showMenu(x, y, entries) {
 window.addEventListener('click', (e) => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#menu').hidden = true; $('#modal').hidden = true; } });
 
-$('#chatList').addEventListener('contextmenu', (e) => {
+function chatMenu(e) {
   const item = e.target.closest('.chat-item');
   if (!item) return;
   e.preventDefault();
   const c = state.chats.get(item.dataset.id);
-  if (c.web) return;
-  const entries = [{ label: c.pinned ? 'Unpin' : 'Pin to top', run: () => guard(api.pin(c.id, !c.pinned)) }];
-  if (c.unread) entries.push({ label: 'Mark as read', run: () => guard(api.markRead(c.id)) });
+  if (!c) return;
+  const entries = [{ label: c.pinned ? 'Unpin' : 'Pin to top', run: () => (c.web ? togglePin(c.id) : guard(api.pin(c.id, !c.pinned))) }];
+  if (c.unread && !c.web) entries.push({ label: 'Mark as read', run: () => guard(api.markRead(c.id)) });
   showMenu(e.clientX, e.clientY, entries);
-});
+}
+$('#chatList').addEventListener('contextmenu', chatMenu);
+$('#feedList').addEventListener('contextmenu', chatMenu);
 
 $('#messages').addEventListener('contextmenu', (e) => {
   const el = e.target.closest('.msg');
@@ -577,6 +592,7 @@ api.onWebChats(({ key, chats }) => {
     const { ts, exact } = webTimestamp(c.time, rank);
     const id = `${key}:${c.title}#${n}`;
     state.chats.set(id, { id, source: key, web: true, n, title: c.title, lastText: c.last, lastOut: false, lastTs: ts, approx: !exact, timeText: c.time, unread: c.unread, pinned: false });
+    applyPin(state.chats.get(id));
   });
   renderList();
 });

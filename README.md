@@ -26,7 +26,7 @@ The date label each web client shows (clock time, weekday, Gregorian or Jalali d
 
 - Text and chat list are stored in a local SQLite database. Files are never downloaded automatically: a card with name and size
   is shown, a click downloads the file into a cache (2 GB cap, least recently used removed first; "Clear download cache" in the gear dialog).
-- Right click a file: Save as, Show in folder. Right click a chat: Pin, Mark as read.
+- Right click a file: Save as, Show in folder. Right click a chat (in the sidebar or in All): Pin to top / Unpin. Pins of web chats are remembered between runs.
 - Drag a downloaded file out of the window to Explorer/Finder or another app. Dragging a file from one chat into another chat forwards it.
 
 ## Adding another messenger
