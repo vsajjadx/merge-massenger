@@ -16,6 +16,7 @@ const SERVICES = {
 const SECOND = /^(tg|wa|ei|ba|ru)2$/; // optional second account of a service, own login and session
 const baseOf = (key) => key.replace(/2$/, '');
 const FOCUS = new Set(['ba', 'ru', 'wa']); // services whose own chat list is moved aside when a chat is opened from our list
+const REAL_CLICK = new Set(['ru']); // services that ignore clicks made by the page: a real mouse click is sent
 const RAIL = 56;      // service rail, px
 const SIDEBAR = 340;  // unified chat list, px (same as #sidebar in styles.css)
 const POLL_MS = 3000;
@@ -301,27 +302,43 @@ class WebTabs {
   async open(key, title, n) {
     this.show(key, false);
     const view = this.views.get(key);
-    const ok = await view.webContents.executeJavaScript(`(${LIB})('open', ${JSON.stringify({ title, n: n || 0 })})`);
-    if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
+    const wc = view.webContents;
+    const call = (op, arg) => wc.executeJavaScript(`(${LIB})(${JSON.stringify(op)}, ${JSON.stringify(arg || null)})`);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const arg = { title, n: n || 0 };
+    const click = async () => {
+      const pt = await call('rect', arg).catch(() => null);
+      if (!pt) return false;
+      wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
+      wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+      wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+      return true;
+    };
+
+    if (REAL_CLICK.has(baseOf(key))) {
+      // These clients only react to a real mouse click, and the row has to be on screen for it: the page's
+      // own list is brought back for a moment (it is moved aside again below), the row is clicked.
+      await call('unfocus').catch(() => {});
+      await sleep(250);
+      if (!(await click())) throw new Error('Chat not found in the web page, open it from the service button');
+    } else {
+      const ok = await call('open', arg);
+      if (!ok) throw new Error('Chat not found in the web page, open it from the service button');
+    }
+
     if (FOCUS.has(baseOf(key))) {
       this.focused.add(key);
-      const wc = view.webContents;
-      await new Promise((r) => setTimeout(r, 700));
-      // Some clients ignore the click made from the page; then a real mouse click is sent to the row.
-      const isOpen = await wc.executeJavaScript(`(${LIB})('chatopen')`).catch(() => true);
-      if (!isOpen) {
-        const pt = await wc.executeJavaScript(`(${LIB})('rect', ${JSON.stringify({ title, n: n || 0 })})`).catch(() => null);
-        if (pt) {
-          wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
-          wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-          wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
-        }
+      if (!REAL_CLICK.has(baseOf(key))) {
+        await sleep(700);
+        // Some clients ignore the click made from the page; then a real mouse click is sent to the row.
+        const isOpen = await call('chatopen').catch(() => true);
+        if (!isOpen) await click();
       }
       // The chat takes a moment to appear; the list can only be moved aside once its message box exists.
       for (let i = 0; i < 16; i++) {
-        await new Promise((r) => setTimeout(r, 250));
-        if (view.webContents.isDestroyed()) return;
-        if (await view.webContents.executeJavaScript(`(${LIB})('focus')`).catch(() => false)) break;
+        await sleep(250);
+        if (wc.isDestroyed()) return;
+        if (await call('focus').catch(() => false)) break;
       }
     }
   }
