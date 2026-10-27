@@ -13,7 +13,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run dist
+      - name: Build
+        shell: pwsh
+        run: |
+          npm run dist *> build.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = (Get-Content build.log -Tail 40) -join '%0A'
+            Write-Output "::error title=build-failure::$tail"
+            exit $code
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: unified-messenger-windows
