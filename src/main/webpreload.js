@@ -67,16 +67,27 @@ if (/whatsapp/i.test(location.hostname)) {
     if (redispatching || !hasFiles(e)) return;
     take(e);
     hideOverlay();
+    const files = [...e.dataTransfer.files];
+    if (files.length) passToPage(files);
+  }, true);
+
+  // WhatsApp builds its drop area when the drag enters the page and the drop handler sits on that new element.
+  // So the events are sent one after the other, and each time to the element that is on top at that point by then.
+  async function passToPage(files) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const main = document.querySelector('#main');
     if (!main) return;
     const r = main.getBoundingClientRect();
     const x = Math.round(r.left + r.width * 0.8), y = Math.round(r.top + r.height * 0.5);
-    const target = document.elementFromPoint(x, y) || main;
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    const fire = (type) => (document.elementFromPoint(x, y) || main).dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt, clientX: x, clientY: y }));
     redispatching = true;
     try {
-      for (const type of ['dragenter', 'dragover', 'drop']) {
-        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: e.dataTransfer, clientX: x, clientY: y }));
-      }
-    } finally { redispatching = false; }
-  }, true);
+      fire('dragenter'); await sleep(120);
+      fire('dragover'); await sleep(60);
+      fire('dragover'); await sleep(60);
+      fire('drop');
+    } finally { setTimeout(() => { redispatching = false; }, 300); }
+  }
 }
