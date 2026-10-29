@@ -73,6 +73,14 @@ const LIB = function (op, arg) {
   const TIME = new RegExp('^(\\d{1,2}:\\d{2}(\\s?[ap]m)?|\\d{1,4}[\\/.\\-]\\d{1,2}([\\/.\\-]\\d{1,4})?|' + MON + '\\s\\d{1,2}(,?\\s\\d{2,4})?|\\d{1,2}\\s' + MON + '(\\s\\d{2,4})?|yesterday|today|mon|tue|wed|thu|fri|sat|sun|دیروز|امروز|شنبه|یکشنبه|دوشنبه|سه‌?شنبه|چهارشنبه|پنج‌?شنبه|جمعه)$', 'i');
   // the "Archived" entry of a chat list (not a chat: it is never listed with the chats)
   const ARCH_RE = /^(archived( chats)?|archive|آرشیو( شده)?|بایگانی( شده)?)(\s?\d{1,4})?$/i;
+  // The title of an opened archive ("Archived"), on the left side of the page.
+  const arcHeading = () => [...document.querySelectorAll('h1, h2, [role="heading"]')].find((e) => ARCH_RE.test(norm(e.textContent)) && e.getClientRects().length > 0 && e.getBoundingClientRect().left < innerWidth * 0.5) || null;
+  // WhatsApp opens the archive as a panel over the chat list: the panel is the nearest block around the title that holds chats.
+  function archiveDrawer() {
+    let el = arcHeading();
+    while (el && !el.querySelector('[role="listitem"]')) el = el.parentElement;
+    return el;
+  }
   // A Telegram-style list shows its archive as a row of its own ("Archived Chats"): not a chat, but the entry of the archive.
   const isArchRow = (el) => { const t = el.querySelector && el.querySelector('.peer-title'); return !!t && ARCH_RE.test(norm(t.textContent)); };
   const EDIT = '[contenteditable]:not([contenteditable="false"]), textarea, [role="textbox"]';
@@ -84,6 +92,12 @@ const LIB = function (op, arg) {
     // rows inside it are archived chats, rows outside it are the normal ones.
     const ARC = document.querySelector('#chats-archived-container');
     const wantArc = !!(arg && arg.archived);
+    if (/whatsapp/i.test(location.hostname)) {
+      const drawer = archiveDrawer();
+      const vis = (el) => el.getClientRects().length > 0;
+      if (arg && arg.archived) return drawer ? [...drawer.querySelectorAll('[role="listitem"]')].filter(vis) : [];
+      return [...document.querySelectorAll('[role="grid"] [role="row"]')].filter((el) => vis(el) && !(drawer && drawer.contains(el)));
+    }
     const known = [...document.querySelectorAll('.chatlist-chat, #chatlist-container ul.chatlist > li, #folders-container ul.chatlist > li')]
       .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'))
       .filter((el) => !isArchRow(el))
@@ -293,6 +307,7 @@ const LIB = function (op, arg) {
   }
   function insideArchive() {
     if (document.querySelector('#chats-archived-container')) return true;
+    if (arcHeading()) return true; // WhatsApp: the archive panel is open although the "Archived" button of the list below is still in the page
     if (document.querySelector('archive-dialog') || archiveEntryEl()) return false;
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n, c = 0; (n = w.nextNode()) && c < 4000; c++) {
