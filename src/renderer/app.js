@@ -173,10 +173,15 @@ function togglePin(id) {
 
 // ---------- chat list ----------
 // byService: the sidebar shows only the messenger picked on the rail; All (no pick) and the feed show every messenger.
+// Archived chats are not part of the normal lists: a messenger picked on the rail has an Archive entry
+// at the top of its list, which opens the archive (with a Back entry); All never shows archived chats.
+state.archiveOpen = false;
+function setFilter(key) { state.filter = key; state.archiveOpen = false; }
+
 function sortedChats(byService = true) {
   const q = state.search.trim().toLowerCase();
   return [...state.chats.values()]
-    .filter((c) => (!byService || !state.filter || c.source === state.filter) && (c.pinned || c.lastTs > 0) && (!q || c.title.toLowerCase().includes(q)))
+    .filter((c) => (byService && state.filter ? c.source === state.filter && !!c.archived === state.archiveOpen : !c.archived) && (c.pinned || c.lastTs > 0) && (!q || c.title.toLowerCase().includes(q)))
     .sort((a, b) => (b.pinned - a.pinned) || (a.pinned ? a.pinOrder - b.pinOrder : 0) || (b.lastTs - a.lastTs));
 }
 
@@ -188,6 +193,11 @@ function renderList() {
     listQueued = false;
     const chats = sortedChats();
     let html = '';
+    if (state.filter && state.archiveOpen) html += '<div class="arc-row" data-arc="0"><span class="arc-ic">←</span>Back</div>';
+    else if (state.filter) {
+      const n = [...state.chats.values()].filter((c) => c.source === state.filter && c.archived).length;
+      if (n) html += `<div class="arc-row" data-arc="1"><span class="arc-ic">▣</span>Archive<span class="n">${n}</span></div>`;
+    }
     let wasPinned = false;
     chats.forEach((c, i) => {
       if (wasPinned && !c.pinned) html += '<div class="divider"></div>';
@@ -206,7 +216,7 @@ function renderList() {
 }
 
 // ---------- "All": every messenger in one list, newest first ----------
-const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika'], ['arc', 'Archived']];
+const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
 state.feedFilter = 'all';
 
 function renderFeed() {
@@ -229,6 +239,10 @@ function renderFeed() {
   }
   $('#feedList').innerHTML = html || '<div class="c-last" style="padding:24px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
 }
+$('#chatList').addEventListener('click', (e) => {
+  const r = e.target.closest('[data-arc]');
+  if (r) { state.archiveOpen = r.dataset.arc === '1'; renderList(); }
+});
 $('#feedTabs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-f]');
   if (b) { state.feedFilter = b.dataset.f; renderFeed(); }
@@ -511,7 +525,7 @@ $('#accounts').addEventListener('click', (e) => {
   if (o || st) {
     const key = (o || st).dataset.open || (o || st).dataset.settings;
     $('#modal').hidden = true;
-    state.filter = key;
+    setFilter(key);
     markRail(key);
     guard(o ? api.showWeb(key) : api.openWebSettings(key));
   } else if (sc) {
@@ -580,11 +594,11 @@ function markRail(svc) {
   }
   renderList();
 }
-$('#allBtn').onclick = () => { state.filter = null; markRail(null); guard(api.hideWeb()); };
+$('#allBtn').onclick = () => { setFilter(null); markRail(null); guard(api.hideWeb()); };
 document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
   b.onclick = () => {
     const off = b.classList.contains('active'); // clicking the open service again closes it
-    state.filter = off ? null : b.dataset.svc;
+    setFilter(off ? null : b.dataset.svc);
     markRail(off ? null : b.dataset.svc);
     guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc));
   };
