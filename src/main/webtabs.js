@@ -84,6 +84,7 @@ const LIB = function (op, arg) {
     const wantArc = !!(arg && arg.archived);
     const known = [...document.querySelectorAll('.chatlist-chat, #chatlist-container ul.chatlist > li, #folders-container ul.chatlist > li')]
       .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'))
+      .filter((el) => el.getClientRects().length > 0) // lists of folders that are not open are in the page too (display: none)
       .filter((el) => !ARC || ARC.contains(el) === wantArc);
     if (wantArc && !ARC && document.querySelector('archive-dialog')) return []; // archive not opened yet
     if (known.length || ARC) return known;
@@ -297,23 +298,38 @@ const LIB = function (op, arg) {
     }
     return false;
   }
+  function backEl() {
+    return [...document.querySelectorAll('[aria-label], [data-icon], [data-testid]')].find((e) => {
+      const r = e.getBoundingClientRect();
+      const s = (e.getAttribute('aria-label') || '') + ' ' + (e.dataset.icon || '') + ' ' + (e.dataset.testid || '');
+      return r.width > 0 && r.top < 110 && r.left < innerWidth * 0.5 && /back|بازگشت|برگشت/i.test(s);
+    });
+  }
+  if (op === 'archiveBack') { // where a real mouse click has to land to leave the archive
+    const b = backEl();
+    if (!b) return null;
+    const q = (b.closest('button, [role="button"]') || b).getBoundingClientRect();
+    return { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2) };
+  }
   if (op === 'archiveEntry') return !!archiveEntryEl();
   if (op === 'archiveInside') return insideArchive();
   if (op === 'archiveClick') { const el = archiveEntryEl(); if (!el) return false; press(el); return true; }
   if (op === 'archiveClose') {
     const btn = document.querySelector('#chats-archived-container .sidebar-close-button');
     if (btn) { press(btn); return true; }
-    const back = [...document.querySelectorAll('[aria-label], [data-icon], [data-testid]')].find((e) => {
-      const r = e.getBoundingClientRect();
-      const s = (e.getAttribute('aria-label') || '') + ' ' + (e.dataset.icon || '') + ' ' + (e.dataset.testid || '');
-      return r.width > 0 && r.top < 110 && r.left < innerWidth * 0.5 && /back|بازگشت|برگشت/i.test(s);
-    });
+    const back = backEl();
     if (back) { press(back.closest('button, [role="button"]') || back); return true; }
     for (const t of ['keydown', 'keyup']) (document.activeElement || document.body).dispatchEvent(new KeyboardEvent(t, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
     return false;
   }
 
-  const items = rows().map((el) => ({ el, chat: parse(el) })).filter((x) => x.chat).slice(0, 80);
+  const seen = new Set();
+  const items = rows().map((el) => ({ el, chat: parse(el) })).filter((x) => x.chat).filter((x) => {
+    const k = x.chat.title + '|' + x.chat.time + '|' + x.chat.last;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, 80);
   if (op === 'list') return items.map((x) => x.chat);
   const hits = items.filter((x) => x.chat.title === arg.title);
   const target = hits[arg.n] || hits[0];
@@ -364,6 +380,7 @@ class WebTabs {
     this.reloaded = new Map();     // last automatic reload per service
     this.archived = new Map();     // key -> archived chats read last
     this.arcMiss = new Map();
+    this.noArchive = new Set();    // services whose archive could not be left again: it is not read any more
     this.nextArchive = new Map();
     this.archiveBusy = new Set();  // services whose archive is open right now (for a scan)
     this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
@@ -497,7 +514,7 @@ class WebTabs {
     }
 
     // Archived chats: read now and then, never while the service is on screen or a chat is being opened.
-    if (this.hadChats.has(key) && key !== this.currentKey && !this.busy.get(key) && Date.now() >= (this.nextArchive.get(key) || 0)) {
+    if (this.hadChats.has(key) && !this.noArchive.has(key) && key !== this.currentKey && !this.busy.get(key) && Date.now() >= (this.nextArchive.get(key) || 0)) {
       this.nextArchive.set(key, Date.now() + ARCHIVE_MS);
       await this.scanArchive(key, wc).catch(() => {});
     }
@@ -551,6 +568,22 @@ class WebTabs {
         if (wc.isDestroyed() || !(await this.js(wc, 'archiveInside').catch(() => false))) break;
         await this.js(wc, 'archiveClose').catch(() => {});
         await sleep(600);
+      }
+      // WhatsApp ignores the click made by the page: its back arrow is pressed with a real mouse click
+      for (let i = 0; i < 2 && !wc.isDestroyed() && (await this.js(wc, 'archiveInside').catch(() => false)); i++) {
+        const pt = await this.js(wc, 'archiveBack').catch(() => null);
+        if (pt) {
+          wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
+          wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        }
+        await sleep(600);
+      }
+      // Still inside the archive: the page is loaded again (it opens on its normal list) and its archive is not read any more.
+      if (!wc.isDestroyed() && (await this.js(wc, 'archiveInside').catch(() => false))) {
+        this.noArchive.add(key);
+        this.archived.set(key, []);
+        this.reload(key, 'stuck in the archive', true);
       }
     } finally { this.archiveBusy.delete(key); }
   }
