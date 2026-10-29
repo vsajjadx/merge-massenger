@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { app, session, shell, WebContentsView } = require('electron');
+const { app, ipcMain, session, shell, WebContentsView } = require('electron');
 const { webFiles } = require('./webfiles');
 
 // Official web clients, each in its own persistent session so the login survives restarts.
@@ -58,6 +58,30 @@ const FIT = function () {
   const later = () => { if (!timer) timer = setTimeout(() => { timer = null; run(); }, 40); };
   new MutationObserver(later).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
   window.addEventListener('resize', later);
+}.toString();
+
+// Runs inside WhatsApp: opens the attach menu of the open chat and marks the file input that takes the files
+// (the one for pictures and videos, or the one for documents).
+const ATTACH = async function (media) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const comp = document.querySelector('footer [contenteditable]:not([contenteditable="false"]), footer [role="textbox"]');
+  const footer = comp && comp.closest('footer');
+  if (!footer) return false;
+  const inputs = () => [...document.querySelectorAll('input[type="file"]')];
+  if (!inputs().length) {
+    const btns = [...footer.querySelectorAll('button')];
+    const btn = btns.find((b) => /attach|پیوست/i.test(b.getAttribute('aria-label') || '')) || btns[0];
+    if (!btn) return false;
+    btn.click();
+    for (let i = 0; i < 15 && !inputs().length; i++) await sleep(100);
+  }
+  const isMedia = (i) => /image|video/i.test(i.accept || '');
+  const all = inputs().filter((i) => !/webp/i.test(i.accept || '') || isMedia(i));
+  const pick = media ? all.find(isMedia) : (all.find((i) => (i.accept || '*') === '*') || all.find((i) => !isMedia(i)));
+  if (!pick) return false;
+  for (const i of inputs()) i.removeAttribute('data-um-file');
+  pick.setAttribute('data-um-file', '1');
+  return true;
 }.toString();
 
 const OUTLINE = function () {
@@ -435,6 +459,12 @@ class WebTabs {
     this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
     this.sentAvatar = new Map();   // key|title -> address of the picture last sent to the window
     this.icons = new Map();        // logo (data URL) of Eitaa, Bale, Rubika
+    // Files dropped on a WhatsApp page (see webpreload.js).
+    ipcMain.on('um:wa-drop', (e, paths) => {
+      const own = [...this.views].some(([k, v]) => baseOf(k) === 'wa' && !v.webContents.isDestroyed() && v.webContents.id === e.sender.id);
+      const list = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && fs.existsSync(p) && fs.statSync(p).isFile()).slice(0, 30) : [];
+      if (own && list.length) this.sendFiles(e.sender, list).catch((err) => this.files.notify(`WhatsApp: the files could not be attached (${err.message})`));
+    });
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -841,6 +871,18 @@ class WebTabs {
   onScreen() {
     const [w, h] = this.win.getContentSize();
     return { x: RAIL + SIDEBAR, y: 0, width: Math.max(0, w - RAIL - SIDEBAR), height: h };
+  }
+
+  // Attaches files to the open WhatsApp chat: the attach menu is opened in the page and the files are put into its
+  // file input, as if they had been picked in the file dialog.
+  async sendFiles(wc, paths) {
+    const media = paths.every((p) => /\.(jpe?g|png|gif|webp|bmp|heic|mp4|mov|m4v|webm|3gp)$/i.test(p));
+    if (!(await wc.executeJavaScript(`(${ATTACH})(${media})`))) throw new Error('open a chat first');
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    const { root } = await wc.debugger.sendCommand('DOM.getDocument', { depth: 0 });
+    const { nodeId } = await wc.debugger.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[data-um-file]' });
+    if (!nodeId) throw new Error('no file input');
+    await wc.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: paths });
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).
