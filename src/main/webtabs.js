@@ -31,6 +31,35 @@ const TO_DATA = async function (src) {
 }.toString();
 const PERMISSIONS = new Set(['notifications', 'media', 'fullscreen', 'clipboard-sanitized-write']);
 
+// Runs inside WhatsApp. Its pop-ups (emoji panel, attach menu, reactions) are placed as if the chat list were
+// still beside the chat, so with the list moved aside they can end up partly outside the left edge of the
+// window. Such a pop-up is pushed back inside; it is left alone as soon as it fits.
+const FIT = function () {
+  if (window.__umFit) return;
+  window.__umFit = true;
+  const boxes = '#expressions-panel-container, #wa-popovers-bucket';
+  const run = () => {
+    for (const box of document.querySelectorAll(boxes)) {
+      for (const el of box.querySelectorAll(':scope > *, :scope > * > *, :scope > * > * > *')) {
+        const prev = Number(el.dataset.umShift || 0);
+        const r = el.getBoundingClientRect();
+        if (r.width < 150 || r.height < 40) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.opacity === '0') continue;
+        const natural = r.left - prev;
+        const want = natural < 8 ? Math.ceil(8 - natural) : 0;
+        if (want === prev) continue;
+        if (want) { el.style.setProperty('translate', want + 'px 0'); el.dataset.umShift = String(want); }
+        else { el.style.removeProperty('translate'); delete el.dataset.umShift; }
+      }
+    }
+  };
+  let timer = null;
+  const later = () => { if (!timer) timer = setTimeout(() => { timer = null; run(); }, 40); };
+  new MutationObserver(later).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+  window.addEventListener('resize', later);
+}.toString();
+
 const OUTLINE = function () {
   const mask = (t) => String(t || '').replace(/\p{L}/gu, 'a');
   const out = [`url: ${location.origin}${location.pathname}`, `viewport: ${innerWidth}x${innerHeight}`];
@@ -465,6 +494,7 @@ class WebTabs {
     view.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => {
       if (isMainFrame && code !== -3) setTimeout(() => this.reload(key, 'load failed', true), 15000);
     });
+    if (baseOf(key) === 'wa') view.webContents.on('did-finish-load', () => view.webContents.executeJavaScript(`(${FIT})()`).catch(() => {}));
     this.files.attach(key, view.webContents, ses);
     this.win.contentView.addChildView(view);
     // A hidden view (setVisible(false)) makes the page report document.hidden: the web clients then do not render
