@@ -32,8 +32,7 @@ document.addEventListener('mousemove', (e) => {
 document.addEventListener('mouseup', () => { job = null; }, true);
 document.addEventListener('dragstart', (e) => { if (job) e.preventDefault(); }, true); // our file drag replaces the page's own
 
-// WhatsApp does not accept files dropped on its page here. The dropped files are taken before the page sees the
-// drop and attached through its own attach menu by the main process (see WebTabs.sendFiles).
+// Files dropped on a WhatsApp chat: accepted anywhere on the page (see below).
 if (/whatsapp/i.test(location.hostname)) {
   const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
   let redispatching = false; // our own events below must not be taken again
