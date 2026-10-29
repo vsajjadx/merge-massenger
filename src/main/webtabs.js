@@ -73,6 +73,8 @@ const LIB = function (op, arg) {
   const TIME = new RegExp('^(\\d{1,2}:\\d{2}(\\s?[ap]m)?|\\d{1,4}[\\/.\\-]\\d{1,2}([\\/.\\-]\\d{1,4})?|' + MON + '\\s\\d{1,2}(,?\\s\\d{2,4})?|\\d{1,2}\\s' + MON + '(\\s\\d{2,4})?|yesterday|today|mon|tue|wed|thu|fri|sat|sun|دیروز|امروز|شنبه|یکشنبه|دوشنبه|سه‌?شنبه|چهارشنبه|پنج‌?شنبه|جمعه)$', 'i');
   // the "Archived" entry of a chat list (not a chat: it is never listed with the chats)
   const ARCH_RE = /^(archived( chats)?|archive|آرشیو( شده)?|بایگانی( شده)?)(\s?\d{1,4})?$/i;
+  // A Telegram-style list shows its archive as a row of its own ("Archived Chats"): not a chat, but the entry of the archive.
+  const isArchRow = (el) => { const t = el.querySelector && el.querySelector('.peer-title'); return !!t && ARCH_RE.test(norm(t.textContent)); };
   const EDIT = '[contenteditable]:not([contenteditable="false"]), textarea, [role="textbox"]';
 
   // Telegram-style clients (Telegram, Eitaa, Rubika) have .peer-title rows; for every other client the
@@ -84,6 +86,7 @@ const LIB = function (op, arg) {
     const wantArc = !!(arg && arg.archived);
     const known = [...document.querySelectorAll('.chatlist-chat, #chatlist-container ul.chatlist > li, #folders-container ul.chatlist > li')]
       .filter((el) => el.querySelector('.peer-title') && !el.closest('rb-chat-archive, rb-chat-ads-container, #search-container, .search-group'))
+      .filter((el) => !isArchRow(el))
       .filter((el) => el.getClientRects().length > 0) // lists of folders that are not open are in the page too (display: none)
       .filter((el) => !ARC || ARC.contains(el) === wantArc);
     if (wantArc && !ARC && document.querySelector('archive-dialog')) return []; // archive not opened yet
@@ -276,6 +279,8 @@ const LIB = function (op, arg) {
   function archiveEntryEl() {
     const k = document.querySelector('archive-dialog');
     if (k) return k;
+    const row = [...document.querySelectorAll('.chatlist-chat, ul.chatlist > li')].find((el) => isArchRow(el) && !el.closest('#chats-archived-container') && el.getClientRects().length > 0);
+    if (row) return row;
     for (const el of document.querySelectorAll('[role="button"], button, [role="listitem"], li, a, div')) {
       if (el.children.length > 6 || el.closest('[contenteditable], #chats-archived-container')) continue;
       const t = norm(el.innerText || el.textContent);
