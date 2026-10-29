@@ -68,15 +68,18 @@ const ATTACH = async function (media) {
   const footer = comp && comp.closest('footer');
   if (!footer) return false;
   const inputs = () => [...document.querySelectorAll('input[type="file"]')];
-  if (!inputs().length) {
-    const btns = [...footer.querySelectorAll('button')];
-    const btn = btns.find((b) => /attach|پیوست/i.test(b.getAttribute('aria-label') || '')) || btns[0];
-    if (!btn) return false;
-    btn.click();
-    for (let i = 0; i < 15 && !inputs().length; i++) await sleep(100);
-  }
+  // The footer already holds a file input of its own; the ones WhatsApp reads for "Document" and
+  // "Photos & videos" are created when the attach menu opens, so the menu is always opened and only the
+  // inputs that appear with it are used.
+  const before = new Set(inputs());
+  const btns = [...footer.querySelectorAll('button')];
+  const btn = btns.find((b) => /attach|پیوست/i.test(b.getAttribute('aria-label') || '')) || btns[0];
+  if (btn && btn.getAttribute('aria-expanded') !== 'true') btn.click();
+  let fresh = [];
+  for (let i = 0; i < 25 && !fresh.length; i++) { await sleep(100); fresh = inputs().filter((x) => !before.has(x)); }
+  const pool = fresh.length ? fresh : inputs();
   const isMedia = (i) => /image|video/i.test(i.accept || '');
-  const all = inputs().filter((i) => !/webp/i.test(i.accept || '') || isMedia(i));
+  const all = pool.filter((i) => !/webp/i.test(i.accept || '') || isMedia(i));
   const pick = media ? all.find(isMedia) : (all.find((i) => (i.accept || '*') === '*') || all.find((i) => !isMedia(i)));
   if (!pick) return false;
   for (const i of inputs()) i.removeAttribute('data-um-file');
@@ -877,12 +880,23 @@ class WebTabs {
   // file input, as if they had been picked in the file dialog.
   async sendFiles(wc, paths) {
     const media = paths.every((p) => /\.(jpe?g|png|gif|webp|bmp|heic|mp4|mov|m4v|webm|3gp)$/i.test(p));
-    if (!(await wc.executeJavaScript(`(${ATTACH})(${media})`))) throw new Error('open a chat first');
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    const { root } = await wc.debugger.sendCommand('DOM.getDocument', { depth: 0 });
-    const { nodeId } = await wc.debugger.sendCommand('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[data-um-file]' });
-    if (!nodeId) throw new Error('no file input');
-    await wc.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: paths });
+    const cmd = (m, p) => wc.debugger.sendCommand(m, p);
+    try {
+      if (!(await wc.executeJavaScript(`(${ATTACH})(${media})`))) throw new Error('no attach input');
+      const { root } = await cmd('DOM.getDocument', { depth: 0 });
+      const { nodeId } = await cmd('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[data-um-file]' });
+      if (!nodeId) throw new Error('no file input');
+      await cmd('DOM.setFileInputFiles', { nodeId, files: paths });
+    } catch (err) {
+      // Last resort: drop the files on the chat with a drag the browser itself carries out.
+      const pt = await wc.executeJavaScript(`(function () { const m = document.querySelector('#main'); if (!m || !document.querySelector('footer')) return null; const r = m.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      if (!pt) throw new Error('open a chat first');
+      wc.send('um:pass-drop');
+      await new Promise((r) => setTimeout(r, 50));
+      const data = { items: [], files: paths, dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await cmd('Input.dispatchDragEvent', { type, x: pt.x, y: pt.y, data });
+    }
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).

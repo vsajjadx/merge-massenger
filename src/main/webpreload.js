@@ -35,9 +35,16 @@ document.addEventListener('dragstart', (e) => { if (job) e.preventDefault(); }, 
 // WhatsApp does not accept files dropped on its page here. The dropped files are taken before the page sees the
 // drop and attached through its own attach menu by the main process (see WebTabs.sendFiles).
 if (/whatsapp/i.test(location.hostname)) {
+  const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  // The page may not accept the drag over some parts of the chat; without this the drop would never happen.
+  window.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }, true);
+  let passUntil = 0; // the main process asks for one drop to be left to the page (its own simulated drop)
+  ipcRenderer.on('um:pass-drop', () => { passUntil = Date.now() + 4000; });
   window.addEventListener('drop', (e) => {
-    const files = e.dataTransfer ? [...e.dataTransfer.files] : [];
-    const paths = files.map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean);
+    if (!hasFiles(e) || Date.now() < passUntil) return;
+    const list = [...e.dataTransfer.files];
+    for (const it of e.dataTransfer.items || []) { const f = it.kind === 'file' ? it.getAsFile() : null; if (f && !list.includes(f)) list.push(f); }
+    const paths = [...new Set(list.map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean))];
     if (!paths.length) return;
     e.preventDefault();
     e.stopImmediatePropagation();
