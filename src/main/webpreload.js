@@ -36,13 +36,12 @@ document.addEventListener('dragstart', (e) => { if (job) e.preventDefault(); }, 
 // drop and attached through its own attach menu by the main process (see WebTabs.sendFiles).
 if (/whatsapp/i.test(location.hostname)) {
   const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
-  let passUntil = 0; // the main process asks for one drop to be left to the page (its own simulated drop)
-  ipcRenderer.on('um:pass-drop', () => { passUntil = Date.now() + 4000; });
-  const passing = () => Date.now() < passUntil;
+  let redispatching = false; // our own events below must not be taken again
 
-  // The page's own drop areas only cover parts of the chat (the pop-up for the drop shows on one side only), and
-  // where they are depends on a layout that is changed here. So as soon as files are dragged over the page, one
-  // overlay of this program covers all of it: the page gets none of the drag events and a drop works anywhere.
+  // WhatsApp's own drop area works on the right part of the chat only (it depends on a layout that is changed
+  // here). So while files are dragged over the page one overlay of this program covers all of it, and on the
+  // drop the very same drop (the same files, as the browser delivered them) is passed to WhatsApp on that
+  // right part: WhatsApp then handles it like a drop it received there itself.
   let overlay = null;
   const showOverlay = () => {
     if (overlay) return;
@@ -57,21 +56,28 @@ if (/whatsapp/i.test(location.hostname)) {
   const hideOverlay = () => { if (overlay) { overlay.remove(); overlay = null; } };
   const take = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
 
-  window.addEventListener('dragenter', (e) => { if (!hasFiles(e) || passing()) return; take(e); showOverlay(); }, true);
-  window.addEventListener('dragover', (e) => { if (!hasFiles(e) || passing()) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
+  window.addEventListener('dragenter', (e) => { if (redispatching || !hasFiles(e)) return; take(e); showOverlay(); }, true);
+  window.addEventListener('dragover', (e) => { if (redispatching || !hasFiles(e)) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
   window.addEventListener('dragleave', (e) => {
-    if (!hasFiles(e) || passing()) return;
+    if (redispatching || !hasFiles(e)) return;
     take(e);
     if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth - 1 || e.clientY >= innerHeight - 1) hideOverlay();
   }, true);
   window.addEventListener('dragend', hideOverlay, true);
   window.addEventListener('drop', (e) => {
-    if (!hasFiles(e) || passing()) return;
-    hideOverlay();
-    const list = [...e.dataTransfer.files];
-    for (const it of e.dataTransfer.items || []) { const f = it.kind === 'file' ? it.getAsFile() : null; if (f && !list.includes(f)) list.push(f); }
-    const paths = [...new Set(list.map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean))];
+    if (redispatching || !hasFiles(e)) return;
     take(e);
-    if (paths.length) ipcRenderer.send('um:wa-drop', paths);
+    hideOverlay();
+    const main = document.querySelector('#main');
+    if (!main) return;
+    const r = main.getBoundingClientRect();
+    const x = Math.round(r.left + r.width * 0.8), y = Math.round(r.top + r.height * 0.5);
+    const target = document.elementFromPoint(x, y) || main;
+    redispatching = true;
+    try {
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: e.dataTransfer, clientX: x, clientY: y }));
+      }
+    } finally { redispatching = false; }
   }, true);
 }

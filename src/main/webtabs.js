@@ -437,12 +437,6 @@ class WebTabs {
     this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
     this.sentAvatar = new Map();   // key|title -> address of the picture last sent to the window
     this.icons = new Map();        // logo (data URL) of Eitaa, Bale, Rubika
-    // Files dropped on a WhatsApp page (see webpreload.js).
-    ipcMain.on('um:wa-drop', (e, paths) => {
-      const own = [...this.views].some(([k, v]) => baseOf(k) === 'wa' && !v.webContents.isDestroyed() && v.webContents.id === e.sender.id);
-      const list = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && fs.existsSync(p) && fs.statSync(p).isFile()).slice(0, 30) : [];
-      if (own && list.length) this.sendFiles(e.sender, list).catch((err) => this.files.notify(`WhatsApp: the files could not be attached (${err.message})`));
-    });
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -849,22 +843,6 @@ class WebTabs {
   onScreen() {
     const [w, h] = this.win.getContentSize();
     return { x: RAIL + SIDEBAR, y: 0, width: Math.max(0, w - RAIL - SIDEBAR), height: h };
-  }
-
-  // Files dropped anywhere on the WhatsApp chat: the page's own drop area works on the right part of the chat, so the
-  // drop is carried out there by the browser itself (a real drag with the files), and WhatsApp handles it as usual.
-  async sendFiles(wc, paths) {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const pt = await wc.executeJavaScript(`(function () { const m = document.querySelector('#main'); if (!m || !document.querySelector('footer')) return null; const r = m.getBoundingClientRect(); return { x: Math.round(r.left + r.width * 0.8), y: Math.round(r.top + r.height * 0.5) }; })()`);
-    if (!pt) throw new Error('open a chat first');
-    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    wc.send('um:pass-drop'); // the page-side overlay of this program must let this drag through
-    await sleep(80);
-    const data = { items: [], files: paths, dragOperationsMask: 1 };
-    for (const type of ['dragEnter', 'dragOver', 'dragOver', 'drop']) {
-      await wc.debugger.sendCommand('Input.dispatchDragEvent', { type, x: pt.x, y: pt.y, data });
-      await sleep(40);
-    }
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).
