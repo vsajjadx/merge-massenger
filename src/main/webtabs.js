@@ -264,13 +264,15 @@ const LIB = function (op, arg) {
     if (col.contains(comp)) return false;
     const box = col.getBoundingClientRect();
     const par = col.parentElement;
-    // Everything else beside the column goes too: the icon rail and the thin absolutely placed divider
-    // elements some clients draw between the list and the chat (WhatsApp shows them as white lines).
+    // The narrow, full-height elements beside the column go too: the icon rail and the thin divider elements
+    // some clients draw between the list and the chat (WhatsApp shows them as white lines). Anything that is
+    // not full height (pop-up containers for the emoji panel and menus, toasts) must stay.
     for (const sib of par.children) {
       if (sib === col || sib.contains(comp) || sib.querySelector(EDIT)) continue;
+      if (sib.id || sib.querySelector('[id*="popover" i], [id*="expressions" i], [id*="toast" i], [role="dialog"], [role="menu"], [role="listbox"]')) continue; // pop-up containers stay
       const r = sib.getBoundingClientRect();
       const pos = getComputedStyle(sib).position;
-      if (r.width <= 140 || pos === 'absolute' || pos === 'fixed') {
+      if ((r.height >= innerHeight * 0.5 && r.width <= 140) || ((pos === 'absolute' || pos === 'fixed') && r.width <= 6)) {
         sib.dataset.umHide = sib.getAttribute('style') || '';
         sib.style.setProperty('display', 'none', 'important');
       }
