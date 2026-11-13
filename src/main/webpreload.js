@@ -55,12 +55,10 @@ document.addEventListener('dragstart', (e) => { if (job) e.preventDefault(); }, 
 // Files dropped on a WhatsApp chat: accepted anywhere on the page (see below).
 if (/whatsapp/i.test(location.hostname)) {
   const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
-  let redispatching = false; // our own events below must not be taken again
 
-  // WhatsApp's own drop area works on the right part of the chat only (it depends on a layout that is changed
-  // here). So while files are dragged over the page one overlay of this program covers all of it, and on the
-  // drop the very same drop (the same files, as the browser delivered them) is passed to WhatsApp on that
-  // right part: WhatsApp then handles it like a drop it received there itself.
+  // WhatsApp's drop handler is attached to a short-lived overlay and recent builds ignore synthetic
+  // DragEvents (`isTrusted === false`). Keep the friendly full-page overlay, but hand the real File
+  // objects to WhatsApp's own hidden file input instead of redispatching an event it will reject.
   let overlay = null;
   const showOverlay = () => {
     if (overlay) return;
@@ -75,39 +73,58 @@ if (/whatsapp/i.test(location.hostname)) {
   const hideOverlay = () => { if (overlay) { overlay.remove(); overlay = null; } };
   const take = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
 
-  window.addEventListener('dragenter', (e) => { if (redispatching || !hasFiles(e)) return; take(e); showOverlay(); }, true);
-  window.addEventListener('dragover', (e) => { if (redispatching || !hasFiles(e)) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; take(e); showOverlay(); }, true);
+  window.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
   window.addEventListener('dragleave', (e) => {
-    if (redispatching || !hasFiles(e)) return;
+    if (!hasFiles(e)) return;
     take(e);
     if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth - 1 || e.clientY >= innerHeight - 1) hideOverlay();
   }, true);
   window.addEventListener('dragend', hideOverlay, true);
   window.addEventListener('drop', (e) => {
-    if (redispatching || !hasFiles(e)) return;
+    if (!hasFiles(e)) return;
     take(e);
     hideOverlay();
     const files = [...e.dataTransfer.files];
-    if (files.length) passToPage(files);
+    if (files.length) void attachFiles(files);
   }, true);
 
-  // WhatsApp builds its drop area when the drag enters the page and the drop handler sits on that new element.
-  // So the events are sent one after the other, and each time to the element that is on top at that point by then.
-  async function passToPage(files) {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const main = document.querySelector('#main');
-    if (!main) return;
-    const r = main.getBoundingClientRect();
-    const x = Math.round(r.left + r.width * 0.8), y = Math.round(r.top + r.height * 0.5);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const fileInputs = () => [...document.querySelectorAll('input[type="file"]')];
+  const isMedia = (files) => files.length > 0 && files.every((f) => /^(image|video)\//i.test(f.type || ''));
+  const inputFor = (files) => {
+    const media = isMedia(files);
+    const inputs = fileInputs();
+    return inputs.find((input) => {
+      const accept = String(input.accept || '').toLowerCase();
+      if (media) return /image|video/.test(accept);
+      return accept === '*' || accept === '' || accept.includes('*/*') || (input.multiple && !/image|video/.test(accept));
+    }) || inputs[0] || null; // WhatsApp's always-present image input also accepts dropped documents.
+  };
+  const clickButton = (label) => [...document.querySelectorAll('button, [role="button"], [role="menuitem"]')]
+    .find((el) => new RegExp(`^${label}$`, 'i').test(String(el.getAttribute('aria-label') || el.textContent || '').trim()))?.click();
+
+  // Open WhatsApp's attachment menu, choose the matching native input, then assign the dropped FileList.
+  // Setting input.files is accepted by the page's normal change handler and preserves its preview/caption UI.
+  async function attachFiles(files) {
+    let input = inputFor(files);
+    if (!input) {
+      if (!clickButton('Attach')) return;
+      for (let i = 0; i < 20 && !input; i++) {
+        await sleep(40);
+        input = inputFor(files);
+        if (!input) clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
+      }
+    }
+    if (!input) return false;
     const dt = new DataTransfer();
-    for (const f of files) dt.items.add(f);
-    const fire = (type) => (document.elementFromPoint(x, y) || main).dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt, clientX: x, clientY: y }));
-    redispatching = true;
-    try {
-      fire('dragenter'); await sleep(120);
-      fire('dragover'); await sleep(60);
-      fire('dragover'); await sleep(60);
-      fire('drop');
-    } finally { setTimeout(() => { redispatching = false; }, 300); }
+    for (const file of files) dt.items.add(file);
+    try { input.files = dt.files; }
+    catch { try { Object.defineProperty(input, 'files', { configurable: true, value: dt.files }); } catch { return false; } }
+    if (!input.files || input.files.length !== files.length) return false;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
   }
+
 }
