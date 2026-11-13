@@ -331,6 +331,19 @@ const LIB = function (op, arg) {
     return !!(list && composer(list));
   }
 
+  // Rubika does not always expose an active-row class. Looking only at the visible header avoids
+  // the full-document `sig` text walk that used to run after every real click.
+  if (op === 'openedFast') {
+    const wanted = norm(arg && arg.title);
+    if (!wanted) return false;
+    const list = (rows()[0] || {}).parentElement;
+    return [...document.querySelectorAll('.peer-title')].some((e) => {
+      if (list && list.contains(e)) return false;
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && norm(e.textContent) === wanted;
+    });
+  }
+
   // ----- archive: the archived chats are not part of the page's normal list, they sit behind an "Archived" entry -----
   const press = (el) => {
     const r = el.getBoundingClientRect();
@@ -955,17 +968,16 @@ class WebTabs {
       // the chat). If the chat did not change the click is repeated; the second retry first presses Escape to close
       // the open chat, which also brings the list back in the page's narrow layout.
       let opened = false;
-      const sig0 = await call('sig').catch(() => '');
-      for (let attempt = 0; attempt < 3 && !opened; attempt++) {
-        if (attempt === 2) {
+      for (let attempt = 0; attempt < 2 && !opened; attempt++) {
+        if (attempt === 1) {
           wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
           wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-          await sleep(200);
+          await sleep(120);
         }
         await call('reveal').catch(() => {});
         let pt = null;
-        for (let i = 0; i < 10; i++) { // the layout needs a moment after the list is forced into view
-          if (i) await sleep(50);
+        for (let i = 0; i < 8; i++) { // the layout needs a moment after the list is forced into view
+          if (i) await sleep(40);
           pt = await call('rect', arg).catch(() => null);
           if (pt && pt.hit) break;
         }
@@ -974,9 +986,9 @@ class WebTabs {
         wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
         wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
         // Done as soon as the page's top area changed (another chat) or the page marks this chat as open.
-        for (let i = 0; i < 14 && !opened; i++) {
-          await sleep(60);
-          opened = (await call('sig').catch(() => sig0)) !== sig0 || !!(await call('opened', arg).catch(() => true));
+        for (let i = 0; i < 10 && !opened; i++) {
+          if (i) await sleep(50);
+          opened = await call('openedFast', arg).catch(() => false);
         }
       }
     } else {
