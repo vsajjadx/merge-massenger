@@ -1,6 +1,26 @@
 // Runs inside every web client (Telegram, WhatsApp, Eitaa, Bale, Rubika) before the page's own scripts.
 // A picture in a chat can be dragged out of the window as a file.
-const { ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+// Electron dispatches a web notification click to the page, but does not reveal a
+// parked WebContentsView or its parent window. Keep the real Notification and all
+// service handlers intact, and add only the missing workspace activation.
+contextBridge.exposeInMainWorld('unifiedMessengerNotification', {
+  activate: () => ipcRenderer.send('um:notification-click'),
+});
+contextBridge.executeInMainWorld({ func: () => {
+  const NativeNotification = window.Notification;
+  if (typeof NativeNotification !== 'function') return;
+  window.Notification = new Proxy(NativeNotification, {
+    construct(target, args, newTarget) {
+      const notification = Reflect.construct(target, args, newTarget);
+      notification.addEventListener('click', () => {
+        window.unifiedMessengerNotification.activate();
+      });
+      return notification;
+    },
+  });
+} });
 
 // Drag a picture out: the file is prepared on mouse down, the drag starts once the mouse has moved.
 const pictureAt = (x, y) => document.elementsFromPoint(x, y).find((el) => el.tagName === 'IMG' && el.clientWidth >= 64 && el.clientHeight >= 64 && (el.currentSrc || el.src));

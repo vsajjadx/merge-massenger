@@ -1,4 +1,5 @@
 node_modules/
 dist/
+dist-*/
 
 src/main/tg-config.json

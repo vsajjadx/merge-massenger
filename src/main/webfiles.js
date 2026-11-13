@@ -1,7 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { app, ipcMain, nativeImage } = require('electron');
+const { app, ipcMain, nativeImage, shell } = require('electron');
+const { randomUUID } = require('crypto');
 const { safeFileName } = require('./shared');
 
 const EXT = {
@@ -27,25 +28,46 @@ function uniquePath(dir, name) {
   return p;
 }
 
-// Files that come out of the web clients: downloads the user starts (no dialog, straight to the Desktop)
+function downloadName(name) {
+  const cleaned = safeFileName(name, 'file').replace(/[. ]+$/, '').slice(0, 180) || 'file';
+  // Windows reserves these names even with a file extension.
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:[. ]|$)/i.test(cleaned) ? '_' + cleaned : cleaned;
+}
+
+// Files that come out of the web clients: downloads the user starts
 // and pictures dragged out of a chat. Nothing is saved without the user asking for it.
 class WebFiles {
   constructor(notify) {
     this.notify = notify;
     this.owners = new Map();    // webContents id -> { key, ses }
+    this.preferences = {};
+    this.reserved = new Set();
+    this.downloads = new Map();
+    this.onActivity = () => {};
     this.dragDir = path.join(os.tmpdir(), 'unified-messenger-drag');
 
-    ipcMain.handle('um:drag-prepare', (_e, d) => this.writeDrag(Buffer.from(d.bytes), d.type));
+    ipcMain.handle('um:drag-prepare', (e, d) => {
+      if (!this.owners.has(e.sender.id) || !d || !(d.bytes instanceof ArrayBuffer) || d.bytes.byteLength > 40 * 1024 * 1024) return null;
+      return this.writeDrag(Buffer.from(d.bytes), d.type);
+    });
     ipcMain.handle('um:drag-prepare-url', async (e, url) => {
       const o = this.owners.get(e.sender.id);
-      if (!o || !/^https?:/i.test(String(url))) return null;
+      if (!o || !/^https:/i.test(String(url))) return null;
       try {
         const r = await o.ses.fetch(url);
-        return this.writeDrag(Buffer.from(await r.arrayBuffer()), r.headers.get('content-type') || '');
+        if (!r.ok || Number(r.headers.get('content-length')) > 40 * 1024 * 1024) return null;
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of r.body) {
+          size += chunk.length;
+          if (size > 40 * 1024 * 1024) return null;
+          chunks.push(Buffer.from(chunk));
+        }
+        return this.writeDrag(Buffer.concat(chunks), r.headers.get('content-type') || '');
       } catch { return null; }
     });
     ipcMain.on('um:drag-start', (e, file) => {
-      if (typeof file !== 'string' || !file.startsWith(this.dragDir) || !fs.existsSync(file)) return;
+      if (!this.owners.has(e.sender.id) || typeof file !== 'string' || path.dirname(path.resolve(file)) !== path.resolve(this.dragDir) || !fs.existsSync(file)) return;
       let icon = nativeImage.createFromPath(file);
       if (icon.isEmpty()) {
         const buf = Buffer.alloc(40 * 40 * 4);
@@ -60,18 +82,67 @@ class WebFiles {
     this.owners.set(contents.id, { key, ses });
     if (ses.__umDownloads) return;
     ses.__umDownloads = true;
-    ses.on('will-download', (_e, item) => this.onDownload(item));
+    ses.on('will-download', (_e, item, source) => {
+      // A removed account cannot trigger downloads through a stale session handler.
+      if (!source || !this.owners.has(source.id)) { item.cancel(); return; }
+      this.onDownload(item);
+    });
   }
   detach(id) { this.owners.delete(id); }
 
-  desktop() { return app.getPath('desktop'); }
+  setPreferences(prefs) { this.preferences = prefs || {}; }
+  getDownloads() { return [...this.downloads.values()]; }
 
-  // A click on Download, or "Save" in the page's own right click menu: straight to the Desktop.
+  reveal(id) {
+    const download = this.downloads.get(id);
+    if (!download || download.state !== 'completed' || !download.path || !fs.existsSync(download.path)) throw new Error('The downloaded file is no longer available.');
+    shell.showItemInFolder(download.path);
+  }
+
+  activity(download) {
+    this.downloads.set(download.id, download);
+    // Keep a small in-memory history. Active downloads are never evicted.
+    if (this.downloads.size > 50) {
+      for (const [id, item] of this.downloads) {
+        if (!['progressing', 'paused'].includes(item.state)) this.downloads.delete(id);
+        if (this.downloads.size <= 50) break;
+      }
+    }
+    this.onActivity(download);
+  }
+
   onDownload(item) {
-    const name = safeFileName(item.getFilename(), 'file');
-    const dest = uniquePath(this.desktop(), name);
-    item.setSavePath(dest);
-    item.once('done', (_ev, state) => { if (state === 'completed') this.notify(`Saved to Desktop: ${path.basename(dest)}`); });
+    try {
+      const directory = this.preferences.downloadPath || app.getPath('desktop');
+      fs.mkdirSync(directory, { recursive: true });
+      const name = downloadName(item.getFilename());
+      const ext = path.extname(name), base = path.basename(name, ext);
+      let dest = uniquePath(directory, name), i = 1;
+      while (this.reserved.has(dest.toLowerCase()) || fs.existsSync(dest)) dest = path.join(directory, `${base} (${i++})${ext}`);
+      this.reserved.add(dest.toLowerCase());
+      if (this.preferences.downloadPrompt) item.setSaveDialogOptions({ defaultPath: dest });
+      else item.setSavePath(dest);
+      const download = { id: randomUUID(), name, state: 'progressing', received: 0, total: item.getTotalBytes() };
+      this.activity({ ...download });
+      item.on('updated', (_event, state) => {
+        download.state = item.isPaused() ? 'paused' : state;
+        download.received = item.getReceivedBytes();
+        download.total = item.getTotalBytes();
+        this.activity({ ...download });
+      });
+      item.once('done', (_ev, state) => {
+        this.reserved.delete(dest.toLowerCase());
+        download.state = state;
+        download.received = item.getReceivedBytes();
+        if (state === 'completed') download.path = item.getSavePath() || dest;
+        this.activity({ ...download });
+        if (state === 'completed') this.notify(`Saved: ${path.basename(item.getSavePath() || dest)}`);
+        else if (state !== 'cancelled') this.notify('Download interrupted. Try downloading the file again.');
+      });
+    } catch {
+      item.cancel();
+      this.notify('Could not save the download. Choose a writable folder in Settings.');
+    }
   }
 
   writeDrag(buf, type) {
@@ -80,7 +151,7 @@ class WebFiles {
       const p = path.join(this.dragDir, f);
       try { if (Date.now() - fs.statSync(p).mtimeMs > 3600e3) fs.rmSync(p, { force: true }); } catch { /* in use */ }
     }
-    const ext = EXT[String(type || '').split(';')[0].toLowerCase()] || '.jpg';
+    const ext = EXT[String(type || '').split(';')[0].toLowerCase()] || '.bin';
     const file = uniquePath(this.dragDir, `image-${stamp()}${ext}`);
     fs.writeFileSync(file, buf);
     return file;

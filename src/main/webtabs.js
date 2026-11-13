@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { app, ipcMain, session, shell, WebContentsView } = require('electron');
+const { app, ipcMain, session, shell, net, WebContentsView } = require('electron');
 const { webFiles } = require('./webfiles');
 
 // Official web clients, each in its own persistent session so the login survives restarts.
@@ -15,6 +15,7 @@ const SERVICES = {
 };
 const SECOND = /^(tg|wa|ei|ba|ru)2$/; // optional second account of a service, own login and session
 const baseOf = (key) => key.replace(/2$/, '');
+const needsDirect = (key) => ['ei', 'ba', 'ru'].includes(baseOf(key));
 const FOCUS = new Set(['ba', 'ru', 'wa']); // services whose own chat list is moved aside when a chat is opened from our list
 const REAL_CLICK = new Set(['ru']); // services that ignore clicks made by the page: a real mouse click is sent
 const RAIL = 56;      // service rail, px
@@ -410,14 +411,23 @@ const LIB = function (op, arg) {
 }.toString();
 
 class WebTabs {
-  constructor(win, onChats, onAccounts, onNotice, onIcon) {
+  constructor(win, onChats, onAccounts, onNotice, onIcon, onStatus, onDownload, onActivated) {
     this.win = win;
     this.files = webFiles(onNotice || (() => {}));
     this.onChats = onChats;
     this.onAccounts = onAccounts;
     this.onIcon = onIcon || (() => {});
+    this.onStatus = onStatus || (() => {});
+    this.onActivated = onActivated || (() => {});
+    this.files.onActivity = onDownload || (() => {});
+    this.statuses = new Map();
+    this.failedLoads = new Set();
+    this.delays = new Set();
+    this.disposed = false;
     this.accountsFile = path.join(app.getPath('userData'), 'accounts.json');
     this.views = new Map();
+    this.connections = new Map();
+    this.pendingLoads = new Set();
     this.last = new Map();
     this.currentKey = null;
     this.focused = new Set(); // services opened from our list: their own list stays out of view
@@ -440,11 +450,48 @@ class WebTabs {
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
-    win.on('closed', () => {
-      clearInterval(this.timer);
-      for (const v of this.views.values()) v.webContents.close();
-      this.views.clear();
-    });
+    win.on('closed', () => this.dispose());
+  }
+
+  setPreferences(prefs) {
+    this.preferences = prefs;
+    this.files.setPreferences(prefs);
+  }
+
+  getStatuses() { return [...this.statuses.values()]; }
+  getDownloads() { return this.files.getDownloads(); }
+  revealDownload(id) { return this.files.reveal(id); }
+
+  status(key, state, detail = '') {
+    if (this.disposed || !this.views.has(key)) return;
+    const previous = this.statuses.get(key);
+    if (previous && previous.state === state && previous.detail === detail) return;
+    const payload = { key, state, detail };
+    this.statuses.set(key, payload);
+    this.onStatus(payload);
+  }
+
+  later(fn, ms) {
+    const timer = setTimeout(() => { this.delays.delete(timer); if (!this.disposed) fn(); }, ms);
+    this.delays.add(timer);
+    return timer;
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    clearInterval(this.timer);
+    for (const timer of this.delays) clearTimeout(timer);
+    this.delays.clear();
+    for (const view of this.views.values()) {
+      if (!view.webContents.isDestroyed()) {
+        this.files.detach(view.webContents.id);
+        view.webContents.close();
+      }
+    }
+    this.views.clear();
+    this.connections.clear();
+    this.pendingLoads.clear();
   }
 
   start() {
@@ -453,7 +500,7 @@ class WebTabs {
     for (const key of [...Object.keys(SERVICES), ...extra]) this.create(key);
     this.layout();
     this.timer = setInterval(() => this.poll(), POLL_MS);
-    setTimeout(() => this.warmUp(), 12000);
+    this.later(() => this.warmUp(), 12000);
   }
 
   // Fallback for pages that still do not fill their chat list while parked: every service that has not shown a
@@ -472,29 +519,74 @@ class WebTabs {
   }
 
   create(key) {
+    if (this.disposed || !SERVICES[baseOf(key)]) return null;
+    if (this.views.has(key)) return this.views.get(key);
     const ses = session.fromPartition('persist:' + key);
     // Some web clients refuse a user agent that says "Electron".
     const appToken = app.getName().replace(/\s+/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     ses.setUserAgent(ses.getUserAgent().replace(new RegExp(`\\s(Electron|${appToken})/\\S+`, 'gi'), ''));
-    ses.setPermissionRequestHandler((_wc, permission, cb) => cb(PERMISSIONS.has(permission)));
+    const trusted = (contents, origin) => {
+      if (!contents || contents.isDestroyed()) return false;
+      try { return new URL(origin || contents.getURL()).origin === new URL(SERVICES[baseOf(key)]).origin; } catch { return false; }
+    };
+    ses.setPermissionRequestHandler((wc, permission, cb, details) => cb(
+      PERMISSIONS.has(permission) && trusted(wc, details?.requestingUrl) && trusted(wc) &&
+      (permission !== 'notifications' || this.preferences?.notifications !== false)
+    ));
+    ses.setPermissionCheckHandler((wc, permission, origin) =>
+      PERMISSIONS.has(permission) && trusted(wc, origin) && trusted(wc) &&
+      (permission !== 'notifications' || this.preferences?.notifications !== false)
+    );
 
     const view = new WebContentsView({ webPreferences: { session: ses, preload: path.join(__dirname, 'webpreload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
-    view.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
-    view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {});
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      if (trusted(view.webContents, url)) {
+        // Some notification handlers open an exact conversation URL instead of
+        // changing their current page. Keep that URL in its signed-in account.
+        if (this.activateNotification(view.webContents, view.webContents.mainFrame) && url !== view.webContents.getURL()) {
+          view.webContents.loadURL(url).catch(() => {});
+        }
+      } else if (/^https?:/i.test(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    view.webContents.on('will-navigate', (event, url) => {
+      if (!trusted(view.webContents, url)) {
+        event.preventDefault();
+        if (/^https?:/i.test(url)) shell.openExternal(url);
+      }
+    });
+    view.webContents.on('did-start-loading', () => {
+      this.failedLoads.delete(key);
+      this.status(key, 'loading', 'Loading web client…');
+    });
     // The chat list of a page that finished loading is read soon, not after the next 3 s tick.
     view.webContents.on('did-finish-load', () => {
-      setTimeout(() => this.poll(), 1500); setTimeout(() => this.poll(), 5000);
-      setTimeout(() => this.grabIcon(key).catch(() => {}), 3000);
+      if (this.failedLoads.has(key)) return;
+      this.status(key, 'ready', 'Web client loaded. Sign in if needed.');
+      this.later(() => this.poll(), 1500); this.later(() => this.poll(), 5000);
+      this.later(() => this.grabIcon(key).catch(() => {}), 3000);
     });
     view.webContents.on('page-favicon-updated', (_e, icons) => {
       const url = (icons || []).filter((u) => /^https?:/i.test(u)).pop();
       if (url) this.grabIcon(key, url).catch(() => {});
     });
     // A page that crashed, hangs or lost its connection is reloaded instead of staying dead until the app is restarted.
-    view.webContents.on('render-process-gone', () => setTimeout(() => this.reload(key, 'crashed', true), 2000));
-    view.webContents.on('unresponsive', () => setTimeout(() => { if (!view.webContents.isDestroyed()) this.reload(key, 'unresponsive'); }, 20000));
+    view.webContents.on('render-process-gone', () => {
+      this.status(key, 'error', 'Web client stopped unexpectedly. Recovering…');
+      this.later(() => this.reload(key, 'crashed', true), 2000);
+    });
+    view.webContents.on('unresponsive', () => {
+      this.status(key, 'error', 'Web client is not responding.');
+      this.later(() => { if (!view.webContents.isDestroyed()) this.reload(key, 'unresponsive'); }, 20000);
+    });
+    view.webContents.on('responsive', () => this.status(key, 'ready', 'Web client loaded. Sign in if needed.'));
     view.webContents.on('did-fail-load', (_e, code, _d, _u, isMainFrame) => {
-      if (isMainFrame && code !== -3) setTimeout(() => this.reload(key, 'load failed', true), 15000);
+      if (isMainFrame && code !== -3) {
+        this.failedLoads.add(key);
+        this.status(key, !net.isOnline() || [-105, -106, -109, -118].includes(code) ? 'offline' : 'error',
+          `Could not load the web client (${code}). Check your connection or reload.`);
+        this.later(() => this.reload(key, 'load failed'), 15000);
+      }
     });
     if (baseOf(key) === 'wa') view.webContents.on('did-finish-load', () => view.webContents.executeJavaScript(`(${FIT})()`).catch(() => {}));
     this.files.attach(key, view.webContents, ses);
@@ -505,7 +597,44 @@ class WebTabs {
     view.setVisible(true);
     this.views.set(key, view);
     this.park(view);
+    this.status(key, 'loading', 'Loading web client…');
+    this.loadService(key, view);
     return view;
+  }
+
+  ensureConnection(key, view) {
+    let connection = this.connections.get(key);
+    if (connection?.view === view) return connection;
+    connection = { view, state: 'pending' };
+    this.connections.set(key, connection);
+    const ses = view.webContents.session;
+    connection.promise = Promise.resolve().then(async () => {
+      const available = () => !this.disposed && this.views.get(key) === view && !view.webContents.isDestroyed();
+      if (!available()) return false;
+      // A per-account setting also covers WebSockets, media, downloads and session.fetch.
+      // Telegram and WhatsApp never enter this path: keep their existing system routing.
+      await ses.setProxy({ mode: 'direct' });
+      if (!available()) return false;
+      await ses.closeAllConnections();
+      connection.state = 'ready';
+      return true;
+    }).catch(() => { connection.state = 'error'; return false; });
+    return connection;
+  }
+
+  loadService(key, view) {
+    const available = () => !this.disposed && this.views.get(key) === view && !view.webContents.isDestroyed();
+    const load = () => { if (available()) view.webContents.loadURL(SERVICES[baseOf(key)]).catch(() => {}); };
+    if (!available()) return;
+    if (!needsDirect(key)) { load(); return; }
+    if (this.pendingLoads.has(view)) return;
+    this.pendingLoads.add(view);
+    const connection = this.ensureConnection(key, view);
+    connection.promise.then((ready) => {
+      if (!available()) return;
+      if (ready) load();
+      else this.status(key, 'error', 'Could not prepare the direct connection. Reload to retry.');
+    }).finally(() => this.pendingLoads.delete(view));
   }
 
   // Runs one LIB operation in the page; gives up after `ms` so that one stuck page cannot block the others.
@@ -515,19 +644,52 @@ class WebTabs {
     return Promise.race([wc.executeJavaScript(`(${LIB})(${JSON.stringify(op)}, ${JSON.stringify(arg || null)})`), limit]).finally(() => clearTimeout(timer));
   }
 
-  reload(key, why, force = false) {
+  reload(key = this.currentKey, why = 'manual', force = false) {
     const view = this.views.get(key);
-    if (!view || view.webContents.isDestroyed()) return;
+    if (!view || view.webContents.isDestroyed() || this.disposed) return false;
+    const connection = this.connections.get(key);
+    if (needsDirect(key) && connection?.state === 'error') {
+      if (why !== 'manual') return false;
+      this.connections.delete(key);
+    }
     const last = this.reloaded.get(key) || 0;
-    if (!force && Date.now() - last < 60000) return;
+    if (why !== 'manual' && !force && Date.now() - last < 60000) return false;
     this.reloaded.set(key, Date.now());
     this.fails.set(key, 0); this.empty.set(key, 0);
     this.archiveBusy.delete(key);
-    view.webContents.reload();
+    this.status(key, 'loading', 'Reloading web client…');
+    // A failed initial navigation may leave about:blank; load the real service again.
+    this.loadService(key, view);
+    return true;
+  }
+
+  showService(key, refreshOnOpen = false) {
+    this.show(key);
+    if (refreshOnOpen === true && /^ei2?$/.test(key)) this.refreshEitaa(key);
+  }
+
+  refreshEitaa(key = this.currentKey) {
+    if (!/^ei2?$/.test(key)) return false;
+    const view = this.views.get(key);
+    if (!view || view.webContents.isDestroyed() || this.disposed) return false;
+    const connection = this.connections.get(key);
+    if (connection?.state === 'error') return this.reload(key, 'manual', true);
+    // Initial navigation already fetches current messages, after direct routing is ready.
+    if (connection?.state !== 'ready' || this.pendingLoads.has(view) || view.webContents.isLoading()) return true;
+    let url;
+    try { url = new URL(view.webContents.getURL()); } catch { /* initial/failed navigation */ }
+    if (!url || url.origin !== new URL(SERVICES.ei).origin) return this.reload(key, 'manual', true);
+    this.reloaded.set(key, Date.now());
+    this.fails.set(key, 0); this.empty.set(key, 0);
+    this.archiveBusy.delete(key);
+    this.status(key, 'loading', 'Refreshing Eitaa…');
+    // Keep the current chat URL and session; bypass stale HTTP cache only.
+    view.webContents.reloadIgnoringCache();
+    return true;
   }
 
   async poll() {
-    if (this.polling) return;
+    if (this.polling || this.disposed) return;
     this.polling = true;
     try {
       await Promise.all([...this.views].map(([key, view]) => this.pollOne(key, view).catch(() => {})));
@@ -536,7 +698,10 @@ class WebTabs {
 
   async pollOne(key, view) {
     const wc = view.webContents;
-    if (wc.isDestroyed()) return;
+    if (wc.isDestroyed() || this.disposed) return;
+    if (needsDirect(key) && this.connections.get(key)?.state !== 'ready') return;
+    if (!net.isOnline()) { this.status(key, 'offline', 'No internet connection. Your last chat list is kept.'); return; }
+    if (this.statuses.get(key)?.state === 'offline' && !wc.isLoading()) { this.reload(key, 'connection restored'); return; }
     if (wc.isLoading()) {
       const since = this.loadingSince.get(key) || Date.now();
       this.loadingSince.set(key, since);
@@ -556,6 +721,7 @@ class WebTabs {
       return;
     }
     const before = this.last.get(key);
+    if (this.disposed || this.views.get(key) !== view) return;
     if (chats.length) { this.hadChats.add(key); this.empty.set(key, 0); }
     else if (before && before !== '[]') {
       // The page is redrawing, or lost its connection: keep showing the last list for a while, and reload it if it stays empty.
@@ -576,6 +742,7 @@ class WebTabs {
     if (json === before) return;
     this.last.set(key, json);
     await this.pictures(key, wc, merged);
+    if (this.disposed || this.views.get(key) !== view) return;
     this.onChats(key, merged.map((c) => {
       const { avatar, ...rest } = c;
       const data = avatar ? this.avatarCache.get(key + '|' + avatar) : '';
@@ -706,8 +873,18 @@ class WebTabs {
     this.win.contentView.removeChildView(view);
     view.webContents.close();
     this.views.delete(key);
-    this.last.delete(key);
+    this.connections.delete(key);
+    this.pendingLoads.delete(view);
+    for (const map of [this.last, this.busy, this.fails, this.empty, this.loadingSince, this.reloaded, this.archived, this.arcMiss, this.nextArchive, this.statuses]) map.delete(key);
     this.focused.delete(key);
+    this.hadChats.delete(key);
+    this.noArchive.delete(key);
+    this.archiveBusy.delete(key);
+    this.failedLoads.delete(key);
+    for (const map of [this.avatarCache, this.sentAvatar]) {
+      for (const id of map.keys()) if (id.startsWith(key + '|')) map.delete(id);
+    }
+    this.onStatus({ key, state: 'disabled', detail: 'Account disabled. Its sign-in is kept on this computer.' });
     this.onChats(key, []);
     return this.saveExtra();
   }
@@ -734,6 +911,7 @@ class WebTabs {
     for (let i = 0; i < 40 && this.archiveBusy.has(key); i++) await new Promise((r) => setTimeout(r, 200));
     this.show(key, false);
     const view = this.views.get(key);
+    if (!view || view.webContents.isDestroyed()) throw new Error('This account is not available. Enable it in Settings.');
     const wc = view.webContents;
     const call = (op, arg) => wc.executeJavaScript(`(${LIB})(${JSON.stringify(op)}, ${JSON.stringify(arg || null)})`);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -811,8 +989,25 @@ class WebTabs {
   }
 
   // restore: opened with its own button, so the service's full page (with its own list) is shown
+  activateNotification(contents, frame) {
+    if (this.disposed || this.win.isDestroyed() || !contents || contents.isDestroyed() || frame !== contents.mainFrame) return false;
+    const entry = [...this.views].find(([, view]) => view.webContents === contents);
+    if (!entry) return false;
+    const [key] = entry;
+    try { if (new URL(contents.getURL()).origin !== new URL(SERVICES[baseOf(key)]).origin) return false; }
+    catch { return false; }
+    if (this.win.isMinimized()) this.win.restore();
+    this.win.show();
+    this.win.focus();
+    // Do not reload or click a guessed chat: the service's native notification
+    // callback has the actual conversation/message identity and must still run.
+    this.show(key, false);
+    this.onActivated(key);
+    return true;
+  }
+
   show(key, restore = true) {
-    if (!this.views.has(key)) return;
+    if (!this.views.has(key) || this.views.get(key).webContents.isDestroyed() || this.disposed) return;
     this.hide();
     this.currentKey = key;
     const view = this.views.get(key);
@@ -835,6 +1030,7 @@ class WebTabs {
   // Same size as when shown (the page lays out its list normally), pushed to the right so that only a 1 px strip
   // stays inside the window: a view lying completely outside is not rendered, one with a visible strip is.
   park(view) {
+    if (this.win.isDestroyed() || view.webContents.isDestroyed()) return;
     view.setVisible(true);
     const [w] = this.win.getContentSize();
     view.setBounds({ ...this.onScreen(), x: w - 1 });
@@ -842,7 +1038,7 @@ class WebTabs {
 
   onScreen() {
     const [w, h] = this.win.getContentSize();
-    return { x: RAIL + SIDEBAR, y: 0, width: Math.max(0, w - RAIL - SIDEBAR), height: h };
+    return { x: RAIL + SIDEBAR, y: 0, width: Math.max(1, w - RAIL - SIDEBAR), height: Math.max(1, h) };
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).
@@ -869,7 +1065,9 @@ class WebTabs {
   }
 
   layout() {
+    if (this.disposed || this.win.isDestroyed()) return;
     for (const [key, v] of this.views) {
+      if (v.webContents.isDestroyed()) continue;
       if (key === this.currentKey) v.setBounds(this.onScreen()); else this.park(v);
     }
   }

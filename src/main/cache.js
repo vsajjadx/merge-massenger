@@ -45,7 +45,12 @@ class DownloadCache {
   }
 
   remove(f) {
-    fs.rmSync(path.dirname(f.path), { recursive: true, force: true });
+    const folder = path.resolve(path.dirname(f.path));
+    const relative = path.relative(path.resolve(this.dir), folder);
+    // Only cache-owned message folders may be removed, even if a stale DB row is damaged.
+    if (/^[a-f0-9]{16}$/.test(relative) && !fs.lstatSync(folder, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
     this.store.deleteFile(f.msg_id);
   }
 

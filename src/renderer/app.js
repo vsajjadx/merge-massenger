@@ -4,6 +4,7 @@ const $ = (s) => document.querySelector(s);
 const state = {
   chats: new Map(), active: null, messages: [], statuses: {}, pending: [], search: '',
   downloading: new Set(), loadingOlder: false, modalShown: false, filter: null,
+  view: 'all', loading: true, webStatuses: {}, preferences: { theme: 'dark', compact: false },
 };
 let icons = {};
 try { icons = JSON.parse(localStorage.getItem('icons') || '{}'); } catch { icons = {}; }
@@ -179,10 +180,38 @@ state.archiveOpen = false;
 function setFilter(key) { state.filter = key; state.archiveOpen = false; }
 
 function sortedChats(byService = true) {
-  const q = state.search.trim().toLowerCase();
+  const q = state.search.trim().normalize('NFKC').toLowerCase();
   return [...state.chats.values()]
-    .filter((c) => (byService && state.filter ? c.source === state.filter && !!c.archived === state.archiveOpen : !c.archived) && (c.pinned || c.lastTs > 0) && (!q || c.title.toLowerCase().includes(q)))
+    .filter((c) => {
+      if (byService && state.filter && c.source !== state.filter) return false;
+      const showArchive = state.view === 'archived' || (byService && state.filter && state.archiveOpen);
+      if (!!c.archived !== !!showArchive) return false;
+      if (state.view === 'unread' && !c.unread) return false;
+      if (state.view === 'pinned' && !c.pinned) return false;
+      const searchable = `${c.title || ''} ${c.lastText || ''} ${SOURCE[c.source.replace(/2$/, '')] || ''}`.normalize('NFKC').toLowerCase();
+      return (c.pinned || c.lastTs > 0) && (!q || searchable.includes(q));
+    })
     .sort((a, b) => (b.pinned - a.pinned) || (a.pinned ? a.pinOrder - b.pinOrder : 0) || (b.lastTs - a.lastTs));
+}
+
+function emptyChats(full = false) {
+  if (state.loading) return `<div class="empty-state ${full ? 'large' : ''}"><div class="loading-ring"></div><h3>Preparing your workspace</h3><p>Connecting your messengers…</p></div>`;
+  if (state.search.trim()) return `<div class="empty-state ${full ? 'large' : ''}"><div class="empty-icon">⌕</div><h3>No matching conversations</h3><p>Try another name, messenger, or message preview.</p><button class="btn ghost" data-clear-search>Clear search</button></div>`;
+  if (state.view !== 'all' || state.archiveOpen) {
+    const label = state.archiveOpen ? 'archived' : state.view;
+    return `<div class="empty-state ${full ? 'large' : ''}"><div class="empty-icon">${label === 'unread' ? '✓' : label === 'pinned' ? '◇' : '▤'}</div><h3>${label === 'unread' ? 'You’re all caught up' : `No ${label} conversations`}</h3><p>${label === 'pinned' ? 'Right-click a conversation and choose Pin to top.' : label === 'unread' ? 'Unread conversations will appear here.' : 'Archived chats appear after they are available in your messenger.'}</p></div>`;
+  }
+  return `<div class="empty-state ${full ? 'large' : ''}"><h3>No conversations yet</h3><p>Sign in to a messenger to get started.</p><button class="text-btn" data-connect>Connect a messenger</button></div>`;
+}
+
+function updateWorkspaceStatus() {
+  const offline = navigator.onLine === false;
+  $('#networkBanner').hidden = !offline;
+  const known = Object.values(state.webStatuses);
+  const ready = known.filter((s) => s.state === 'ready' || s.state === 'loaded').length;
+  const errors = known.filter((s) => s.state === 'error').length;
+  const label = offline ? 'You are offline' : ready ? `${ready} messenger${ready === 1 ? '' : 's'} available` : errors ? 'Some services need attention' : state.loading ? 'Preparing workspace' : 'Ready to connect';
+  $('#connectionStatus').innerHTML = `<i class="${offline || errors && !ready ? 'warn' : ready ? 'ready' : ''}"></i>${label}`;
 }
 
 let listQueued = false;
@@ -193,59 +222,56 @@ function renderList() {
     listQueued = false;
     const chats = sortedChats();
     let html = '';
-    if (state.filter && state.archiveOpen) html += '<div class="arc-row" data-arc="0"><span class="arc-ic">←</span>Back</div>';
-    else if (state.filter) {
+    if (state.filter && state.archiveOpen) html += '<button class="arc-row" data-arc="0"><span class="arc-ic">←</span>Back to conversations</button>';
+    else if (state.filter && state.view === 'all') {
       const n = [...state.chats.values()].filter((c) => c.source === state.filter && c.archived).length;
-      if (n) html += `<div class="arc-row" data-arc="1"><span class="arc-ic">▣</span>Archive<span class="n">${n}</span></div>`;
+      if (n) html += `<button class="arc-row" data-arc="1"><span class="arc-ic">▣</span>Archive<span class="n">${n}</span></button>`;
     }
     let wasPinned = false;
     chats.forEach((c, i) => {
       if (wasPinned && !c.pinned) html += '<div class="divider"></div>';
       wasPinned = c.pinned;
       const last = (c.archived ? '<span class="arc">Archived</span>' : '') + (c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText));
-      html += `<div class="chat-item ${c.id === state.active ? 'active' : ''}" data-id="${esc(c.id)}">
+      html += `<div class="chat-item ${c.id === state.active ? 'active' : ''}" data-id="${esc(c.id)}" tabindex="0" role="button" aria-label="${esc(c.title)}${c.unread ? ', unread' : ''}" aria-pressed="${c.id === state.active}">
         ${avatar(c)}
         <div class="c-body">
           <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
           <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : c.pinned ? PIN : ''}</div>
         </div></div>`;
     });
-    $('#chatList').innerHTML = html || '<div class="c-last" style="padding:20px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
+    $('#chatList').innerHTML = html + (!chats.length ? emptyChats() : '');
+    $('#listCount').textContent = chats.length;
+    $('#listHeading').textContent = state.search ? 'Search results' : state.filter ? SOURCE[state.filter.replace(/2$/, '')] : `${state.view === 'all' ? 'All' : state.view[0].toUpperCase() + state.view.slice(1)} conversations`;
+    const allChats = [...state.chats.values()].filter((c) => !c.archived);
+    const unread = allChats.reduce((sum, c) => sum + Math.max(0, Number(c.unread) || 0), 0);
+    $('#totalBadge').textContent = unread > 999 ? '999+' : unread;
+    $('#totalBadge').hidden = !unread;
+    if (state.lastUnread !== unread) { state.lastUnread = unread; if (api.setUnread) guard(api.setUnread(unread)); }
+    updateWorkspaceStatus();
     renderFeed();
   });
 }
 
 // ---------- "All": every messenger in one list, newest first ----------
-const FEED_TABS = [['all', 'All'], ['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
-state.feedFilter = 'all';
-
 function renderFeed() {
-  const base = (c) => c.source.replace(/2$/, '');
-  const all = sortedChats(false);
-  $('#feedTabs').innerHTML = FEED_TABS.map(([k, label]) => {
-    const list = k === 'all' ? all : k === 'arc' ? all.filter((c) => c.archived) : all.filter((c) => base(c) === k);
-    const unread = list.reduce((n, c) => n + (c.unread || 0), 0);
-    return `<button class="feed-tab ${state.feedFilter === k ? 'active' : ''}" data-f="${k}">${label}<span class="n">${list.length}</span>${unread ? `<span class="u">${unread}</span>` : ''}</button>`;
-  }).join('');
-  const chats = state.feedFilter === 'all' ? all : state.feedFilter === 'arc' ? all.filter((c) => c.archived) : all.filter((c) => base(c) === state.feedFilter);
-  let html = '', lastLabel = null;
-  for (const c of chats) {
-    const label = c.pinned ? 'Pinned' : c.approx ? 'Earlier' : dayLabel(c.lastTs);
-    if (label !== lastLabel) { html += `<div class="day">${esc(label)}</div>`; lastLabel = label; }
-    const last = (c.archived ? '<span class="arc">Archived</span>' : '') + (c.lastOut ? `<span class="you">You: </span>${esc(c.lastText)}` : esc(c.lastText));
-    html += `<div class="chat-item" data-id="${esc(c.id)}">${avatar(c)}<div class="c-body">
-      <div class="c-row"><div class="c-title">${esc(c.title || 'Unknown')}</div><div class="c-time">${esc(c.timeText) || listTime(c.lastTs)}</div></div>
-      <div class="c-row"><div class="c-last">${last}</div>${c.unread ? `<div class="badge">${c.unread}</div>` : c.pinned ? PIN : ''}</div></div></div>`;
-  }
-  $('#feedList').innerHTML = html || '<div class="c-last" style="padding:24px;text-align:center">No chats yet. Log in to a service with the buttons on the left.</div>';
+  // The unified chat list lives in the sidebar. Keep the conversation area quiet until a chat opens.
+  $('#feedList').innerHTML = '<div class="conversation-placeholder"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M12 9h24a6 6 0 0 1 6 6v17a6 6 0 0 1-6 6H22l-10 5v-5a6 6 0 0 1-6-6V15a6 6 0 0 1 6-6Z"/><path d="M16 20h16M16 27h10"/></svg><h2>Select a conversation</h2><p>Choose a chat from the list to start messaging.</p><button class="text-btn" data-connect>Connect a messenger</button></div>';
+}
+$('#listFilters').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-view]');
+  if (!button) return;
+  state.view = button.dataset.view;
+  state.archiveOpen = false;
+  document.querySelectorAll('[data-view]').forEach((b) => { b.classList.toggle('active', b === button); b.setAttribute('aria-pressed', String(b === button)); });
+  renderList();
+});
+for (const el of [$('#chatList'), $('#feedList')]) {
+  el.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.chat-item')) { e.preventDefault(); openChat(e.target.dataset.id); } });
+  el.addEventListener('click', (e) => { if (e.target.closest('[data-connect]')) openModal('accounts'); if (e.target.closest('[data-clear-search]')) { state.search = ''; $('#search').value = ''; renderList(); $('#search').focus(); } });
 }
 $('#chatList').addEventListener('click', (e) => {
   const r = e.target.closest('[data-arc]');
   if (r) { state.archiveOpen = r.dataset.arc === '1'; renderList(); }
-});
-$('#feedTabs').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-f]');
-  if (b) { state.feedFilter = b.dataset.f; renderFeed(); }
 });
 $('#feedList').addEventListener('click', (e) => {
   const item = e.target.closest('.chat-item');
@@ -440,7 +466,21 @@ function showMenu(x, y, entries) {
   };
 }
 window.addEventListener('click', (e) => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#menu').hidden = true; $('#modal').hidden = true; } });
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $('#menu').hidden = true; closeModal(); }
+  const command = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+  if (command && (e.code === 'KeyK' || key === 'k')) { e.preventDefault(); focusSearch(); }
+  if (command && (e.code === 'Comma' || key === ',')) { e.preventDefault(); openModal('appearance'); }
+  if (command && (e.code === 'KeyR' || key === 'r')) { e.preventDefault(); reloadActive(); }
+  if (command && (e.code === 'Digit1' || key === '1')) { e.preventDefault(); closeModal(false); $('#allBtn').click(); }
+  if (e.key === 'Tab' && !$('#modal').hidden) {
+    const focusables = [...$('#modal').querySelectorAll('button, input, select, [tabindex="0"], summary')].filter((el) => el.getClientRects().length && !el.disabled && el.tabIndex !== -1);
+    const first = focusables[0], last = focusables.at(-1);
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
 
 function chatMenu(e) {
   const item = e.target.closest('.chat-item');
@@ -509,27 +549,35 @@ function accountHtml(source, title, s) {
 const SERVICE_LIST = [['tg', 'Telegram'], ['wa', 'WhatsApp'], ['ei', 'Eitaa'], ['ba', 'Bale'], ['ru', 'Rubika']];
 function renderAccounts() {
   const rows = [];
+  const additions = [];
   for (const k of ['tg', 'wa', 'ei', 'ba', 'ru']) {
     const second = k + '2', on = state.extra.has(second);
-    const row = (key, label, extra) => `<div class="svc-row ${extra}"><div class="name">${label}</div>
-      <button class="btn" data-open="${key}">Open</button><button class="btn" data-settings="${key}">Settings</button>
-      ${extra ? `<button class="btn" data-second="${second}:0">Remove</button>` : ''}</div>`;
+    const row = (key, label, extra) => {
+      const status = state.webStatuses[key];
+      const detail = status?.state === 'error' && status.detail?.startsWith('Could not prepare') ? 'Direct connection setup failed' : status ? ({ ready: 'Web client available', loading: 'Loading web client…', offline: 'Offline', error: 'Connection needs attention', disabled: 'Disabled' }[status.state] || 'Ready to connect') : 'Open to sign in';
+      const connection = ['ei', 'ba', 'ru'].includes(k) ? 'Direct' : 'System connection';
+      return `<div class="svc-row ${extra}"><span class="account-mark ${k}">${badgeHtml(k, !!extra)}</span><div class="name">${label}<small>${connection} · ${esc(detail)}</small></div>
+      <button class="btn" data-open="${key}" aria-label="Open ${label}">Open</button><button class="btn ghost" data-settings="${key}" aria-label="Open ${label} settings">Settings</button>
+      ${extra ? `<button class="btn ghost" data-second="${second}:0" aria-label="Remove ${label}">Remove</button>` : ''}</div>`;
+    };
     rows.push(row(k, SOURCE[k], ''));
-    rows.push(on ? row(second, SOURCE[k] + ' 2', 'second')
-      : `<div class="svc-row second"><div class="name"><small>${SOURCE[k]}: second account</small></div><button class="btn" data-second="${second}:1">Add</button></div>`);
+    if (on) rows.push(row(second, SOURCE[k] + ' 2', 'second'));
+    else additions.push(`<div class="svc-row"><div class="name">${SOURCE[k]}</div><button class="btn ghost" data-second="${second}:1">Add account</button></div>`);
   }
-  $('#accounts').innerHTML = rows.join('');
+  const expand = $('#accounts .additional-accounts')?.open;
+  $('#accounts').innerHTML = rows.join('') + (additions.length ? `<details class="additional-accounts" ${expand ? 'open' : ''}><summary>Add another account</summary>${additions.join('')}</details>` : '');
 }
 $('#accounts').addEventListener('click', (e) => {
   const o = e.target.closest('[data-open]'), st = e.target.closest('[data-settings]'), sc = e.target.closest('[data-second]');
   if (o || st) {
     const key = (o || st).dataset.open || (o || st).dataset.settings;
-    $('#modal').hidden = true;
+    closeModal(false);
     setFilter(key);
     markRail(key);
-    guard(o ? api.showWeb(key) : api.openWebSettings(key));
+    guard(o ? api.showWeb(key, true) : api.openWebSettings(key));
   } else if (sc) {
     const [key, on] = sc.dataset.second.split(':');
+    if (on === '0' && state.rail === key) { setFilter(null); markRail(null); }
     guard(api.setAccount(key, on === '1'));
   }
 });
@@ -538,20 +586,56 @@ async function refreshCache() {
   const c = await api.cacheInfo();
   $('#cacheInfo').textContent = `Downloaded files: ${size(c.bytes) || '0 B'} of ${size(c.max)}`;
 }
-function openModal() { $('#modal').hidden = false; renderAccounts(); refreshCache(); }
-// Inside a messenger (its page covers the window, so a dialog could not be seen) the button goes straight to
-// that messenger's own settings; on All it opens the Messengers menu.
-$('#accountsBtn').onclick = () => {
-  if (state.rail) guard(api.openWebSettings(state.rail));
-  else openModal();
-};
-$('#closeModal').onclick = () => ($('#modal').hidden = true);
-$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
+let modalFocus = null;
+function showSettingsPane(pane) {
+  for (const button of document.querySelectorAll('[data-pane]')) {
+    const selected = button.dataset.pane === pane;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    $(`#pane-${button.dataset.pane}`).hidden = !selected;
+  }
+}
+async function openModal(pane = 'accounts') {
+  const alreadyOpen = !$('#modal').hidden;
+  if (!alreadyOpen) modalFocus = document.activeElement;
+  state.modalShown = true;
+  if (state.rail) await guard(api.hideWeb());
+  $('#modal').hidden = false;
+  showSettingsPane(pane);
+  renderAccounts();
+  syncPreferences();
+  guard(refreshCache());
+  $('#closeModal').focus();
+}
+function closeModal(restore = true) {
+  if ($('#modal').hidden) return;
+  $('#modal').hidden = true;
+  state.modalShown = false;
+  if (restore && state.rail) guard(api.showWeb(state.rail));
+  if (restore && modalFocus?.isConnected) modalFocus.focus();
+}
+$('#accountsBtn').onclick = () => openModal('accounts');
+$('#settingsRailBtn').onclick = () => openModal('appearance');
+$('#shortcutsBtn').onclick = () => openModal('about');
+$('#closeModal').onclick = () => closeModal();
+$('#doneSettings').onclick = () => closeModal();
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+$('#settingsTabs').addEventListener('click', (e) => { const button = e.target.closest('[data-pane]'); if (button) showSettingsPane(button.dataset.pane); });
+$('#settingsTabs').addEventListener('keydown', (e) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const tabs = [...document.querySelectorAll('[data-pane]')];
+  const i = tabs.indexOf(document.activeElement);
+  const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  e.preventDefault(); showSettingsPane(tabs[next].dataset.pane); tabs[next].focus();
+});
 $('#clearCache').onclick = async () => {
-  await api.clearCache();
-  await refreshCache();
-  state.messages.forEach((m) => (m.localPath = null));
-  if (state.active) renderMessages('keep');
+  try {
+    await api.clearCache();
+    await refreshCache();
+    state.messages.forEach((m) => (m.localPath = null));
+    if (state.active) renderMessages('keep');
+    toast('Download cache cleared.');
+  } catch (e) { toast(e.message); }
 };
 $('#accounts').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -581,11 +665,41 @@ api.onStatus((s) => {
 });
 api.onProblem(toast);
 api.onFocusChat((id) => { if (state.chats.has(id)) openChat(id); });
+if (api.onWebActivated) api.onWebActivated((key) => {
+  if (!/^(tg|wa|ei|ba|ru)2?$/.test(key)) return;
+  closeModal(false);
+  $('#menu').hidden = true;
+  state.active = null;
+  setFilter(key);
+  markRail(key);
+});
+if (api.onWebStatus) api.onWebStatus((s) => {
+  state.webStatuses[s.key] = s;
+  updateWorkspaceStatus();
+  const button = document.querySelector(`.rail-btn[data-svc="${s.key}"]`);
+  if (button) { button.dataset.state = s.state; button.title = `${SOURCE[s.key.replace(/2$/, '')]}${s.key.endsWith('2') ? ' · account 2' : ''} · ${{ ready: 'Web client available', loading: 'Loading…', offline: 'Offline', error: 'Connection needs attention' }[s.state] || s.state}`; }
+  if (state.modalShown) renderAccounts();
+  syncEitaaRefresh();
+});
+
+function syncEitaaRefresh() {
+  const button = $('#refreshEitaaBtn');
+  const active = /^ei2?$/.test(state.rail || '');
+  const loading = active && state.webStatuses[state.rail]?.state === 'loading';
+  button.hidden = !active;
+  button.disabled = !!loading;
+  button.setAttribute('aria-busy', String(!!loading));
+  button.querySelector('span').textContent = loading ? 'Refreshing…' : 'Refresh Eitaa';
+}
+$('#refreshEitaaBtn').onclick = () => {
+  if (/^ei2?$/.test(state.rail || '')) guard(api.refreshEitaa(state.rail));
+};
 
 function markRail(svc) {
   document.querySelectorAll('.rail-btn[data-svc]').forEach((x) => x.classList.toggle('active', x.dataset.svc === svc));
   $('#allBtn').classList.toggle('active', !svc);
   state.rail = svc || null; // the service whose page is open, null on All
+  syncEitaaRefresh();
   if (!svc) {
     // Back on All: the feed was hidden when a chat was opened from it, so it has to be shown again.
     state.active = null;
@@ -600,7 +714,7 @@ document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
     const off = b.classList.contains('active'); // clicking the open service again closes it
     setFilter(off ? null : b.dataset.svc);
     markRail(off ? null : b.dataset.svc);
-    guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc));
+    guard(off ? api.hideWeb() : api.showWeb(b.dataset.svc, true));
   };
 });
 
@@ -608,11 +722,13 @@ document.querySelectorAll('.rail-btn[data-svc]').forEach((b) => {
 state.extra = new Set();
 function applyAccounts(list) {
   state.extra = new Set(list);
+  for (const [id, chat] of state.chats) if (chat.source.endsWith('2') && !state.extra.has(chat.source)) state.chats.delete(id);
   document.querySelectorAll('.rail-btn[data-svc$="2"]').forEach((b) => { b.hidden = !state.extra.has(b.dataset.svc); });
+  renderList();
   if (!$('#modal').hidden) renderAccounts();
 }
 api.onAccounts((list) => { applyAccounts(list); if (!$('#modal').hidden) renderAccounts(); });
-api.accounts().then(applyAccounts);
+guard(api.accounts().then(applyAccounts));
 $('#rail').addEventListener('contextmenu', (e) => {
   const b = e.target.closest('.rail-btn[data-svc]');
   if (!b) return;
@@ -666,10 +782,97 @@ api.onWebIcon(({ key, url }) => setIcon(key, url));
 // icons the main process already fetched before this window was ready
 api.webIcons().then((all) => { for (const [k, u] of Object.entries(all || {})) setIcon(k, u); }).catch(() => {});
 
-$('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => toast(`Saved: ${f}`)));
+$('#inspectBtn').onclick = () => guard(api.inspectWeb().then((f) => { if (f) toast(`Saved: ${f}`); }));
+
+// ---------- desktop preferences and shortcuts ----------
+const systemTheme = window.matchMedia('(prefers-color-scheme: light)');
+function applyPreferences(preferences) {
+  state.preferences = { ...state.preferences, ...preferences };
+  const theme = state.preferences.theme;
+  document.documentElement.dataset.theme = theme === 'system' ? systemTheme.matches ? 'light' : 'dark' : theme || 'dark';
+  document.body.classList.toggle('compact', !!state.preferences.compact);
+  syncPreferences();
+}
+function syncPreferences() {
+  for (const input of document.querySelectorAll('[data-pref]')) {
+    const value = state.preferences[input.dataset.pref];
+    if (input.type === 'checkbox') input.checked = !!value;
+    else input.value = value || 'dark';
+  }
+  $('#downloadPath').textContent = state.preferences.downloadPath || 'Default download folder';
+  $('#downloadPath').title = state.preferences.downloadPath || '';
+}
+systemTheme.addEventListener('change', () => applyPreferences(state.preferences));
+if (api.onPreferences) api.onPreferences(applyPreferences);
+$('#modal').addEventListener('change', async (e) => {
+  const input = e.target.closest('[data-pref]');
+  if (!input) return;
+  input.disabled = true;
+  try {
+    if (!api.updatePreferences) throw new Error('Desktop preferences are unavailable.');
+    applyPreferences(await api.updatePreferences({ [input.dataset.pref]: input.type === 'checkbox' ? input.checked : input.value }));
+    $('#settingsStatus').textContent = 'Saved.';
+  } catch (error) { syncPreferences(); toast(error.message); $('#settingsStatus').textContent = 'Could not save. Please try again.'; }
+  finally { input.disabled = false; }
+});
+$('#chooseDownload').onclick = async () => {
+  try {
+    const chosen = await api.chooseDownloadDirectory();
+    if (chosen) applyPreferences(await api.updatePreferences({ downloadPath: chosen }));
+  } catch (error) { toast(error.message); }
+};
+for (const [id, kind] of [['openDownloads', 'downloads'], ['openDownloadsList', 'downloads'], ['openData', 'data'], ['openLogs', 'logs']]) $("#" + id).onclick = () => guard(api.openAppFolder(kind));
+function focusSearch() { $('#search').focus(); $('#search').select(); }
+function reloadActive() {
+  if (!state.rail) { toast('Open a messenger to reload it.'); return; }
+  const refresh = /^ei2?$/.test(state.rail) ? api.refreshEitaa(state.rail) : api.reloadWeb(state.rail);
+  guard(refresh.then(() => toast(/^ei2?$/.test(state.rail || '') ? 'Refreshing Eitaa…' : 'Reloading messenger…')));
+}
+$('#reloadBtn').onclick = reloadActive;
+if (api.onShortcut) api.onShortcut((shortcut) => {
+  const action = typeof shortcut === 'string' ? shortcut : shortcut.action;
+  if (action === 'search') focusSearch();
+  if (action === 'settings') openModal('appearance');
+  if (action === 'all') { closeModal(false); $('#allBtn').click(); }
+  if (action === 'reload') reloadActive();
+});
+window.addEventListener('online', updateWorkspaceStatus);
+window.addEventListener('offline', updateWorkspaceStatus);
+window.addEventListener('unhandledrejection', (e) => { e.preventDefault(); toast(e.reason?.message || 'An unexpected error occurred. Please try again.'); });
+
+// ---------- real download activity from the main process ----------
+const downloads = new Map();
+function renderDownloads() {
+  const list = [...downloads.values()].reverse();
+  $('#downloadsList').innerHTML = list.map((d) => {
+    const progress = d.total > 0 ? Math.max(0, Math.min(100, Math.round(d.received / d.total * 100))) : null;
+    const completed = d.state === 'completed';
+    const status = completed ? 'Completed' : d.state === 'cancelled' ? 'Cancelled' : d.state === 'paused' ? 'Paused' : d.state === 'interrupted' || d.state === 'failed' ? 'Interrupted' : progress === null ? 'Downloading…' : `${progress}% · ${size(d.received)} of ${size(d.total)}`;
+    return `<div class="download-item"><div class="download-file-icon">↓</div><div class="download-body"><strong>${esc(d.name)}</strong><small>${status}</small>${!completed && d.state !== 'cancelled' && d.state !== 'interrupted' && d.state !== 'failed' ? `<progress ${progress === null ? '' : `value="${progress}"`} max="100" aria-label="Download progress"></progress>` : ''}</div>${completed && api.revealDownload ? `<button class="btn ghost" data-reveal-download="${esc(d.id)}">Show in folder</button>` : ''}</div>`;
+  }).join('') || '<div class="empty-state"><div class="empty-icon">↓</div><h3>No downloads yet</h3><p>Files you download from your messengers will appear here.</p></div>';
+}
+$('#downloadsBtn').onclick = () => { renderDownloads(); openModal('downloads'); };
+$('#downloadsList').addEventListener('click', (e) => { const button = e.target.closest('[data-reveal-download]'); if (button && api.revealDownload) guard(api.revealDownload(button.dataset.revealDownload)); });
+if (api.onDownload) api.onDownload((d) => { downloads.set(d.id, d); if (downloads.size > 100) downloads.delete(downloads.keys().next().value); renderDownloads(); });
 
 (async function init() {
-  state.statuses = await api.statuses();
+  const results = await Promise.allSettled([
+    api.statuses(), api.listChats(), api.preferences ? api.preferences() : Promise.resolve(state.preferences),
+    api.appInfo ? api.appInfo() : Promise.resolve(null), api.webStatuses ? api.webStatuses() : Promise.resolve([]),
+    api.downloads ? api.downloads() : Promise.resolve([]),
+  ]);
+  const value = (i, fallback) => results[i].status === 'fulfilled' ? results[i].value : fallback;
+  state.statuses = value(0, {});
+  for (const chat of value(1, [])) state.chats.set(chat.id, chat);
+  applyPreferences(value(2, state.preferences));
+  const info = value(3, null);
+  if (info) $('#versionLabel').textContent = `Version ${info.version} · Windows ${info.packaged ? 'desktop' : 'development'}`;
+  const statuses = value(4, []);
+  for (const status of Array.isArray(statuses) ? statuses : Object.values(statuses)) state.webStatuses[status.key] = status;
+  for (const download of value(5, [])) downloads.set(download.id, download);
+  state.loading = false;
   renderList();
   renderAccounts();
+  renderDownloads();
+  if (results[1].status === 'rejected') toast('Could not load saved conversations. Try reopening the app.');
 })();

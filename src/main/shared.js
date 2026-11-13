@@ -25,8 +25,15 @@ function previewOf(m) {
 
 // Strip path separators and characters Windows refuses in file names.
 function safeFileName(name, fallback) {
-  const cleaned = String(name || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/^\.+/, '').trim();
-  return cleaned || fallback || 'file';
+  let cleaned = String(name || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/^\.+/, '').trim().replace(/[. ]+$/, '');
+  if (!cleaned) cleaned = String(fallback || 'file').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '') || 'file';
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(cleaned)) cleaned = '_' + cleaned;
+  // Leave room for a collision suffix and avoid a trailing split surrogate.
+  if (cleaned.length > 180) {
+    const ext = path.extname(cleaned).slice(0, 20);
+    cleaned = cleaned.slice(0, 180 - ext.length).replace(/[\uD800-\uDBFF]$/, '') + ext;
+  }
+  return cleaned;
 }
 
 module.exports = { mimeFor, extFor, toNum, previewOf, safeFileName };
