@@ -213,6 +213,7 @@ const LIB = function (op, arg) {
   const restoreAll = () => {
     restoreRev();
     for (const el of document.querySelectorAll('[data-um-hide]')) restore(el, 'umHide');
+    for (const el of document.querySelectorAll('[data-um-edge]')) restore(el, 'umEdge');
     const col = document.querySelector('[data-um-col]');
     if (col) { restore(col, 'umStyle'); delete col.dataset.umCol; }
     const grid = document.querySelector('[data-um-grid]');
@@ -260,6 +261,20 @@ const LIB = function (op, arg) {
     if (par && getComputedStyle(par).display.includes('grid')) {
       par.dataset.umGrid = par.getAttribute('style') || '';
       par.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+    }
+    // WhatsApp keeps two full-height drawer columns inside a wrapper around the moved list. Their
+    // one-pixel left borders are the two stray rules visible in the unified layout. They are not
+    // siblings of `col`, so the general narrow-rail pass above cannot remove them. Keep the drawer
+    // contents intact and only remove those borders while the unified list is active.
+    if (/whatsapp/i.test(location.hostname)) {
+      for (const edge of document.querySelectorAll('[data-testid="drawer-left"], [data-testid="drawer-middle"]')) {
+        const r = edge.getBoundingClientRect();
+        const s = getComputedStyle(edge);
+        if (r.height < innerHeight * 0.5 || r.width <= 0 || r.left < -8 || r.left > innerWidth * 0.8) continue;
+        if (s.borderLeftStyle === 'none' || parseFloat(s.borderLeftWidth) <= 0) continue;
+        edge.dataset.umEdge = edge.getAttribute('style') || '';
+        edge.style.setProperty('border-left', '0', 'important');
+      }
     }
     return true;
   }

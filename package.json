@@ -1,6 +1,6 @@
 {
   "name": "unified-messenger",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A Windows workspace for Telegram, WhatsApp, Eitaa, Bale and Rubika",
   "main": "src/main/main.js",
   "scripts": {
