@@ -243,7 +243,10 @@ const LIB = function (op, arg) {
     // not full height (pop-up containers for the emoji panel and menus, toasts) must stay.
     for (const sib of par.children) {
       if (sib === col || sib.contains(comp) || sib.querySelector(EDIT)) continue;
-      if (sib.id || sib.querySelector('[id*="popover" i], [id*="expressions" i], [id*="toast" i], [role="dialog"], [role="menu"], [role="listbox"]')) continue; // pop-up containers stay
+      // An id alone is not enough to keep a sibling on screen. WhatsApp gives its icon rail and
+      // separator hosts ids too, so that broad check left the two vertical rules behind after the
+      // chat-list column was moved. Keep only real overlay containers (dialogs, menus, popovers).
+      if (sib.querySelector('[id*="popover" i], [id*="expressions" i], [id*="toast" i], [role="dialog"], [role="menu"], [role="listbox"]')) continue;
       const r = sib.getBoundingClientRect();
       const pos = getComputedStyle(sib).position;
       if ((r.height >= innerHeight * 0.5 && r.width <= 140) || ((pos === 'absolute' || pos === 'fixed') && r.width <= 6)) {
