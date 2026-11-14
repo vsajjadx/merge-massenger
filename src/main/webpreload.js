@@ -58,7 +58,13 @@ if (/whatsapp/i.test(location.hostname)) {
   let passUntil = 0;
   // The main process may carry out one direct drag on the page. Let that trusted browser path reach WhatsApp
   // instead of catching it again in this bridge.
-  ipcRenderer.on('um:pass-drop', () => { passUntil = Date.now() + 4000; });
+  ipcRenderer.on('um:pass-drop', () => {
+    // Tell the main process that the bridge is ready before it dispatches the synthetic
+    // browser drag.  Without this handshake the first drag could arrive while this
+    // preload was still catching normal user drops, so the first attempt was swallowed.
+    passUntil = Date.now() + 8000;
+    ipcRenderer.send('um:pass-drop-ready');
+  });
   const passing = () => Date.now() < passUntil;
 
   // WhatsApp's drop handler is attached to a short-lived overlay and recent builds ignore synthetic

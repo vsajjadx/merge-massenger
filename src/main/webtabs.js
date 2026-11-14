@@ -478,17 +478,29 @@ class WebTabs {
     this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
     this.sentAvatar = new Map();   // key|title -> address of the picture last sent to the window
     this.icons = new Map();        // logo (data URL) of Eitaa, Bale, Rubika
+    this.dropPassWaiters = new Map(); // webContents id -> resolver for the direct WhatsApp drop handshake
+    this.directDropBusy = new Set();  // ignore duplicate native drop events while one is being completed
     // Files dropped on the visible WhatsApp page are forwarded here so the browser performs a direct drop on
     // the open chat. The page-side bridge never opens the + attachment menu for this path.
-    ipcMain?.on?.('um:wa-drop-direct', (event, paths) => {
+    this.onDropPassReady = (event) => {
+      const finish = this.dropPassWaiters.get(event.sender.id);
+      if (finish) finish(true);
+    };
+    this.onDirectDrop = (event, paths) => {
       const own = [...this.views].some(([key, view]) => baseOf(key) === 'wa' && !view.webContents.isDestroyed() && view.webContents.id === event.sender.id);
       if (!own || !Array.isArray(paths)) return;
       const list = paths.filter((file) => {
         if (typeof file !== 'string' || !path.isAbsolute(file)) return false;
         try { return fs.statSync(file).isFile(); } catch { return false; }
       }).slice(0, 30);
-      if (list.length) this.sendFiles(event.sender, list).catch((error) => this.files.notify(`WhatsApp: the files could not be attached (${error.message})`));
-    });
+      if (!list.length || this.directDropBusy.has(event.sender.id)) return;
+      this.directDropBusy.add(event.sender.id);
+      this.sendFiles(event.sender, list)
+        .catch((error) => this.files.notify(`WhatsApp: the files could not be attached (${error.message})`))
+        .finally(() => this.directDropBusy.delete(event.sender.id));
+    };
+    ipcMain?.on?.('um:pass-drop-ready', this.onDropPassReady);
+    ipcMain?.on?.('um:wa-drop-direct', this.onDirectDrop);
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -522,6 +534,11 @@ class WebTabs {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    ipcMain?.removeListener?.('um:pass-drop-ready', this.onDropPassReady);
+    ipcMain?.removeListener?.('um:wa-drop-direct', this.onDirectDrop);
+    for (const finish of this.dropPassWaiters.values()) finish(false);
+    this.dropPassWaiters.clear();
+    this.directDropBusy.clear();
     clearInterval(this.timer);
     for (const timer of this.delays) clearTimeout(timer);
     this.delays.clear();
@@ -1084,23 +1101,111 @@ class WebTabs {
 
   // Perform a direct browser drag on the open WhatsApp chat. This intentionally bypasses the + attachment menu:
   // the page receives the files as a normal drop and keeps its native preview/send flow.
+  async waitForDropPass(wc, timeout = 1200) {
+    const id = wc.id;
+    const old = this.dropPassWaiters.get(id);
+    if (old) old(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(false), timeout);
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (this.dropPassWaiters.get(id) === finish) this.dropPassWaiters.delete(id);
+        resolve(result);
+      };
+      this.dropPassWaiters.set(id, finish);
+      try { wc.send('um:pass-drop'); }
+      catch { finish(false); }
+    });
+  }
+
   async sendFiles(wc, paths) {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const point = await wc.executeJavaScript(`(function () {
+    const pointScript = `(function () {
+      const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return r.width > 160 && r.height > 120 && s.display !== 'none' && s.visibility !== 'hidden';
+      };
       const main = document.querySelector('#main');
-      const footer = document.querySelector('footer');
+      const footer = document.querySelector('#main footer, footer');
       if (!main || !footer) return null;
-      const r = main.getBoundingClientRect();
-      return { x: Math.round(r.left + r.width * 0.72), y: Math.round(r.top + r.height * 0.5) };
-    })()`);
+      const body = [
+        main.querySelector('[data-testid="conversation-panel-body"]'),
+        main.querySelector('.copyable-area'),
+        main,
+      ].find(visible);
+      if (!body) return null;
+      const r = body.getBoundingClientRect();
+      const fr = footer.getBoundingClientRect();
+      const left = Math.max(r.left + 20, 0);
+      const right = Math.min(r.right - 20, innerWidth);
+      const top = Math.max(r.top + 20, 0);
+      const bottom = Math.min(r.bottom, fr.top - 28, innerHeight);
+      if (right - left < 120 || bottom - top < 100) return null;
+      return { x: Math.round(left + (right - left) * 0.52), y: Math.round(top + (bottom - top) * 0.46) };
+    })()`;
+    const findPoint = async () => {
+      for (let i = 0; i < 14; i++) {
+        const point = await wc.executeJavaScript(pointScript).catch(() => null);
+        if (point) return point;
+        await sleep(100);
+      }
+      return null;
+    };
+    const hasPreview = () => wc.executeJavaScript(`(function () {
+      const visible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+      };
+      if ([...document.querySelectorAll('input[type=file]')].some((el) => el.files && el.files.length)) return true;
+      if ([...document.querySelectorAll('[aria-label*="caption" i], [data-testid*="caption" i]')].some(visible)) return true;
+      return [...document.querySelectorAll('[role="dialog"], [data-testid="media-viewer"], [data-testid*="media-editor" i]')].some(visible);
+    })()`).catch(() => false);
+
+    let point = await findPoint();
     if (!point) throw new Error('open a WhatsApp chat first');
-    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    wc.send('um:pass-drop');
-    await sleep(60);
-    const data = { items: [], files: paths, dragOperationsMask: 1 };
-    for (const type of ['dragEnter', 'dragOver', 'dragOver', 'drop']) {
-      await wc.debugger.sendCommand('Input.dispatchDragEvent', { type, x: point.x, y: point.y, data });
-      await sleep(45);
+    if (!wc.debugger.isAttached()) {
+      try { wc.debugger.attach('1.3'); }
+      catch (error) {
+        if (!/already attached/i.test(String(error?.message || error))) throw error;
+      }
+      await sleep(120);
+    }
+
+    const dispatch = async () => {
+      // Wait for the preload to stop intercepting ordinary user drops. This removes the race that made the
+      // first attempt disappear while subsequent drops happened to arrive after the bridge was ready.
+      const passed = await this.waitForDropPass(wc);
+      if (!passed) {
+        try { wc.send('um:pass-drop'); } catch { /* the debugger call below will report a destroyed page */ }
+      }
+      await sleep(140);
+      const data = {
+        items: paths.map(() => ({ mimeType: 'application/octet-stream', data: '' })),
+        files: paths,
+        dragOperationsMask: 1,
+      };
+      for (const [type, pause] of [['dragEnter', 120], ['dragOver', 100], ['dragOver', 100], ['drop', 180]]) {
+        await wc.debugger.sendCommand('Input.dispatchDragEvent', { type, x: point.x, y: point.y, data });
+        await sleep(pause);
+      }
+      await sleep(380);
+    };
+
+    await dispatch();
+    // WhatsApp can finish loading its drop target just after the first drag. Retry once only when there is
+    // still no native attachment preview, so an accepted first drop is never duplicated.
+    if (!(await hasPreview())) {
+      point = await findPoint();
+      if (!point) throw new Error('open a WhatsApp chat first');
+      await dispatch();
+      if (!(await hasPreview())) throw new Error('WhatsApp did not open the attachment preview');
     }
   }
 
