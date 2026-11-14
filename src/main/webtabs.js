@@ -478,6 +478,17 @@ class WebTabs {
     this.avatarCache = new Map();  // key|address -> data URL ('' when it could not be read)
     this.sentAvatar = new Map();   // key|title -> address of the picture last sent to the window
     this.icons = new Map();        // logo (data URL) of Eitaa, Bale, Rubika
+    // Files dropped on the visible WhatsApp page are forwarded here so the browser performs a direct drop on
+    // the open chat. The page-side bridge never opens the + attachment menu for this path.
+    ipcMain?.on?.('um:wa-drop-direct', (event, paths) => {
+      const own = [...this.views].some(([key, view]) => baseOf(key) === 'wa' && !view.webContents.isDestroyed() && view.webContents.id === event.sender.id);
+      if (!own || !Array.isArray(paths)) return;
+      const list = paths.filter((file) => {
+        if (typeof file !== 'string' || !path.isAbsolute(file)) return false;
+        try { return fs.statSync(file).isFile(); } catch { return false; }
+      }).slice(0, 30);
+      if (list.length) this.sendFiles(event.sender, list).catch((error) => this.files.notify(`WhatsApp: the files could not be attached (${error.message})`));
+    });
     win.on('resize', () => this.layout());
     win.on('maximize', () => this.layout());
     win.on('unmaximize', () => this.layout());
@@ -1069,6 +1080,28 @@ class WebTabs {
   onScreen() {
     const [w, h] = this.win.getContentSize();
     return { x: RAIL + SIDEBAR, y: 0, width: Math.max(1, w - RAIL - SIDEBAR), height: Math.max(1, h) };
+  }
+
+  // Perform a direct browser drag on the open WhatsApp chat. This intentionally bypasses the + attachment menu:
+  // the page receives the files as a normal drop and keeps its native preview/send flow.
+  async sendFiles(wc, paths) {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const point = await wc.executeJavaScript(`(function () {
+      const main = document.querySelector('#main');
+      const footer = document.querySelector('footer');
+      if (!main || !footer) return null;
+      const r = main.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width * 0.72), y: Math.round(r.top + r.height * 0.5) };
+    })()`);
+    if (!point) throw new Error('open a WhatsApp chat first');
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    wc.send('um:pass-drop');
+    await sleep(60);
+    const data = { items: [], files: paths, dragOperationsMask: 1 };
+    for (const type of ['dragEnter', 'dragOver', 'dragOver', 'drop']) {
+      await wc.debugger.sendCommand('Input.dispatchDragEvent', { type, x: point.x, y: point.y, data });
+      await sleep(45);
+    }
   }
 
   // Opens the service with its full page and tries to open its own menu (where its settings are).

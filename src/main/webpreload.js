@@ -55,6 +55,11 @@ document.addEventListener('dragstart', (e) => { if (job) e.preventDefault(); }, 
 // Files dropped on a WhatsApp chat: accepted anywhere on the page (see below).
 if (/whatsapp/i.test(location.hostname)) {
   const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  let passUntil = 0;
+  // The main process may carry out one direct drag on the page. Let that trusted browser path reach WhatsApp
+  // instead of catching it again in this bridge.
+  ipcRenderer.on('um:pass-drop', () => { passUntil = Date.now() + 4000; });
+  const passing = () => Date.now() < passUntil;
 
   // WhatsApp's drop handler is attached to a short-lived overlay and recent builds ignore synthetic
   // DragEvents (`isTrusted === false`). Keep the friendly full-page overlay, but hand the real File
@@ -73,23 +78,22 @@ if (/whatsapp/i.test(location.hostname)) {
   const hideOverlay = () => { if (overlay) { overlay.remove(); overlay = null; } };
   const take = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
 
-  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; take(e); showOverlay(); }, true);
-  window.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
+  window.addEventListener('dragenter', (e) => { if (passing() || !hasFiles(e)) return; take(e); showOverlay(); }, true);
+  window.addEventListener('dragover', (e) => { if (passing() || !hasFiles(e)) return; take(e); e.dataTransfer.dropEffect = 'copy'; showOverlay(); }, true);
   window.addEventListener('dragleave', (e) => {
-    if (!hasFiles(e)) return;
+    if (passing() || !hasFiles(e)) return;
     take(e);
     if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth - 1 || e.clientY >= innerHeight - 1) hideOverlay();
   }, true);
   window.addEventListener('dragend', hideOverlay, true);
   window.addEventListener('drop', (e) => {
-    if (!hasFiles(e)) return;
+    if (passing() || !hasFiles(e)) return;
     take(e);
     hideOverlay();
     const files = [...e.dataTransfer.files];
     if (files.length) void attachFiles(files);
   }, true);
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fileInputs = () => [...document.querySelectorAll('input[type="file"]')];
   const inferredMime = (name) => {
     const ext = String(name || '').toLowerCase().match(/\.[a-z0-9]{1,8}$/)?.[0] || '';
@@ -103,6 +107,10 @@ if (/whatsapp/i.test(location.hostname)) {
       '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed', '.txt': 'text/plain',
     })[ext] || '';
   };
+
+  const pathsFor = (files) => [...new Set(files.map((file) => {
+    try { return webUtils.getPathForFile(file); } catch { return ''; }
+  }).filter(Boolean))];
   const fileMime = (file) => String(file?.type || inferredMime(file?.name)).toLowerCase();
   const isMedia = (files) => files.length > 0 && files.every((f) => /^(image|video)\//i.test(fileMime(f)));
   const accepts = (input, file) => {
@@ -132,18 +140,16 @@ if (/whatsapp/i.test(location.hostname)) {
       return score(b) - score(a);
     })[0] || null;
   };
-  const clickButton = (label) => [...document.querySelectorAll('button, [role="button"], [role="menuitem"]')]
-    .find((el) => new RegExp(`^${label}$`, 'i').test(String(el.getAttribute('aria-label') || el.textContent || '').trim()))?.click();
-
   // Open WhatsApp's attachment menu, choose the matching native input, then assign the dropped FileList.
   // Setting input.files is accepted by the page's normal change handler and preserves its preview/caption UI.
   async function attachFiles(files) {
     let input = inputFor(files);
     if (!input) {
-      if (!clickButton('Attach')) return;
-      await sleep(50);
-      clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
-      for (let i = 0; i < 25 && !input; i++) { await sleep(40); input = inputFor(files); }
+      // Do not open WhatsApp's + menu here. Forward the real local paths to the main process, which performs a
+      // direct browser drag on the open chat. This keeps drag-and-drop separate from the manual attachment menu.
+      const paths = pathsFor(files);
+      if (paths.length) ipcRenderer.send('um:wa-drop-direct', paths);
+      return paths.length > 0;
     }
     if (!input) return false;
     const dt = new DataTransfer();

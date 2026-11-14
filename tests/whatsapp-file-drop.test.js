@@ -7,6 +7,7 @@ const vm = require('node:vm');
 function loadDrop(inputs) {
   const handlers = {};
   const events = [];
+  const sent = [];
   class DataTransfer {
     constructor() {
       this._files = [];
@@ -46,8 +47,8 @@ function loadDrop(inputs) {
           exposeInMainWorld() {},
           executeInMainWorld() {},
         },
-        ipcRenderer: { invoke: async () => null, send() {} },
-        webUtils: {},
+        ipcRenderer: { invoke: async () => null, send: (...args) => sent.push(args), on() {} },
+        webUtils: { getPathForFile: (file) => file.path || '' },
       };
     },
   };
@@ -55,7 +56,7 @@ function loadDrop(inputs) {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/main/webpreload.js'), 'utf8'), sandbox, {
     filename: path.join(__dirname, '../src/main/webpreload.js'),
   });
-  return { drop: handlers.drop, events };
+  return { drop: handlers.drop, events, sent };
 }
 
 function input(accept, multiple = true) { return { accept, multiple, files: null }; }
@@ -88,4 +89,17 @@ test('WhatsApp drops images into the media input even when a document input is a
   assert.deepEqual(image.files, [file]);
   assert.equal(documentInput.files, null);
   assert.equal(h.events.length, 2);
+});
+
+test('WhatsApp drops a document through the direct bridge when no document input exists', async () => {
+  const image = input('image/*,video/*');
+  const h = loadDrop([image]);
+  const file = { name: 'archive.zip', type: 'application/zip', path: 'C:\\Users\\test\\Desktop\\archive.zip' };
+  h.drop({
+    dataTransfer: { types: ['Files'], files: [file] },
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  await Promise.resolve();
+  assert.equal(image.files, null);
+  assert.equal(JSON.stringify(h.sent), JSON.stringify([['um:wa-drop-direct', [file.path]]]));
 });
