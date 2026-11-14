@@ -16,8 +16,32 @@ const EXT = {
   'application/x-7z-compressed': '.7z', 'application/gzip': '.gz', 'application/x-gzip': '.gz', 'application/x-tar': '.tar',
   'application/acad': '.dwg', 'application/x-acad': '.dwg', 'application/dwg': '.dwg', 'application/x-dwg': '.dwg', 'image/vnd.dwg': '.dwg', 'image/x-dwg': '.dwg',
   'application/dxf': '.dxf', 'application/x-dxf': '.dxf', 'image/vnd.dxf': '.dxf',
-  'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp', 'image/bmp': '.bmp',
+  'image/tiff': '.tif', 'image/avif': '.avif', 'image/heic': '.heic', 'image/heif': '.heif',
+  'image/svg+xml': '.svg', 'image/x-icon': '.ico',
 };
+
+function sniffMime(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 4) return '';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 8 && Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).equals(buf.subarray(0, 8))) return 'image/png';
+  const head = buf.subarray(0, 12).toString('ascii');
+  if (/^GIF8[79]a/.test(head)) return 'image/gif';
+  if (head.slice(0, 2) === 'BM') return 'image/bmp';
+  if (head.slice(0, 4) === 'II*\0' || head.slice(0, 4) === 'MM\0*') return 'image/tiff';
+  if (head.slice(0, 4) === 'RIFF' && head.slice(8, 12) === 'WEBP') return 'image/webp';
+  if (buf.length >= 12 && buf.subarray(4, 8).toString('ascii') === 'ftyp' && /hei[cfx]|mif1/i.test(buf.subarray(8, 16).toString('ascii'))) return 'image/heic';
+  const text = buf.subarray(0, 512).toString('utf8').trimStart();
+  if (/^(?:<\?xml[^>]*>\s*)?<svg(?:\s|>)/i.test(text)) return 'image/svg+xml';
+  return '';
+}
+
+function hintExtension(hint) {
+  let text = String(hint || '');
+  try { text = new URL(text).pathname; } catch { /* a plain file name is fine */ }
+  const ext = path.extname(text).toLowerCase();
+  return Object.values(EXT).includes(ext) ? ext : '';
+}
 
 const stamp = () => new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 
@@ -48,7 +72,7 @@ class WebFiles {
 
     ipcMain.handle('um:drag-prepare', (e, d) => {
       if (!this.owners.has(e.sender.id) || !d || !(d.bytes instanceof ArrayBuffer) || d.bytes.byteLength > 40 * 1024 * 1024) return null;
-      return this.writeDrag(Buffer.from(d.bytes), d.type);
+      return this.writeDrag(Buffer.from(d.bytes), d.type, d.name);
     });
     ipcMain.handle('um:drag-prepare-url', async (e, url) => {
       const o = this.owners.get(e.sender.id);
@@ -63,7 +87,7 @@ class WebFiles {
           if (size > 40 * 1024 * 1024) return null;
           chunks.push(Buffer.from(chunk));
         }
-        return this.writeDrag(Buffer.concat(chunks), r.headers.get('content-type') || '');
+        return this.writeDrag(Buffer.concat(chunks), r.headers.get('content-type') || '', url);
       } catch { return null; }
     });
     ipcMain.on('um:drag-start', (e, file) => {
@@ -145,13 +169,17 @@ class WebFiles {
     }
   }
 
-  writeDrag(buf, type) {
+  writeDrag(buf, type, hint = '') {
     fs.mkdirSync(this.dragDir, { recursive: true });
     for (const f of fs.readdirSync(this.dragDir)) { // old drag files are not needed any more
       const p = path.join(this.dragDir, f);
       try { if (Date.now() - fs.statSync(p).mtimeMs > 3600e3) fs.rmSync(p, { force: true }); } catch { /* in use */ }
     }
-    const ext = EXT[String(type || '').split(';')[0].toLowerCase()] || '.bin';
+    const declared = String(type || '').split(';')[0].trim().toLowerCase();
+    // Some messenger CDN responses deliberately omit Content-Type and Chromium reports an empty Blob type.
+    // Inspect the bytes before falling back to .bin so a dragged JPEG/PNG keeps a useful image extension.
+    const mime = sniffMime(buf) || declared;
+    const ext = EXT[mime] || hintExtension(hint) || '.bin';
     const file = uniquePath(this.dragDir, `image-${stamp()}${ext}`);
     fs.writeFileSync(file, buf);
     return file;

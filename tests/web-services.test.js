@@ -170,3 +170,12 @@ test('drag IPC rejects unowned senders and account disable clears per-account st
   assert.equal(h.statuses.at(-1).state, 'disabled');
   h.tabs.dispose();
 });
+
+test('dragged images infer their real extension when the messenger omits the MIME type', () => {
+  const h = harness();
+  const view = h.tabs.create('tg');
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]).buffer;
+  const file = h.ipc.handlers['um:drag-prepare']({ sender: view.webContents }, { bytes: jpeg, type: '' });
+  assert.equal(path.extname(file), '.jpg');
+  h.tabs.dispose();
+});
