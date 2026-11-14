@@ -91,15 +91,46 @@ if (/whatsapp/i.test(location.hostname)) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const fileInputs = () => [...document.querySelectorAll('input[type="file"]')];
-  const isMedia = (files) => files.length > 0 && files.every((f) => /^(image|video)\//i.test(f.type || ''));
+  const inferredMime = (name) => {
+    const ext = String(name || '').toLowerCase().match(/\.[a-z0-9]{1,8}$/)?.[0] || '';
+    return ({
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+      '.bmp': 'image/bmp', '.heic': 'image/heic', '.heif': 'image/heif', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+      '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+      '.pdf': 'application/pdf', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed', '.txt': 'text/plain',
+    })[ext] || '';
+  };
+  const fileMime = (file) => String(file?.type || inferredMime(file?.name)).toLowerCase();
+  const isMedia = (files) => files.length > 0 && files.every((f) => /^(image|video)\//i.test(fileMime(f)));
+  const accepts = (input, file) => {
+    const raw = String(input.accept || '').trim().toLowerCase();
+    if (!raw) return true; // an empty accept is the browser's "all files" input
+    const type = fileMime(file);
+    const name = String(file?.name || '').toLowerCase();
+    return raw.split(',').map((token) => token.trim()).filter(Boolean).some((token) => {
+      if (token === '*' || token === '*/*') return true;
+      if (token.endsWith('/*')) return type.startsWith(token.slice(0, -1));
+      if (token.startsWith('.')) return name.endsWith(token);
+      return type === token;
+    });
+  };
   const inputFor = (files) => {
     const media = isMedia(files);
-    const inputs = fileInputs();
-    return inputs.find((input) => {
-      const accept = String(input.accept || '').toLowerCase();
-      if (media) return /image|video/.test(accept);
-      return accept === '*' || accept === '' || accept.includes('*/*') || (input.multiple && !/image|video/.test(accept));
-    }) || inputs[0] || null; // WhatsApp's always-present image input also accepts dropped documents.
+    const candidates = fileInputs().filter((input) =>
+      (input.multiple || files.length === 1) && files.every((file) => accepts(input, file))
+    );
+    // Prefer WhatsApp's media input for pictures/videos and its document/all-files input for everything else.
+    return candidates.sort((a, b) => {
+      const score = (input) => {
+        const accept = String(input.accept || '').toLowerCase();
+        const mediaInput = /image|video/.test(accept);
+        return media === mediaInput ? 3 : 0;
+      };
+      return score(b) - score(a);
+    })[0] || null;
   };
   const clickButton = (label) => [...document.querySelectorAll('button, [role="button"], [role="menuitem"]')]
     .find((el) => new RegExp(`^${label}$`, 'i').test(String(el.getAttribute('aria-label') || el.textContent || '').trim()))?.click();
@@ -110,11 +141,9 @@ if (/whatsapp/i.test(location.hostname)) {
     let input = inputFor(files);
     if (!input) {
       if (!clickButton('Attach')) return;
-      for (let i = 0; i < 20 && !input; i++) {
-        await sleep(40);
-        input = inputFor(files);
-        if (!input) clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
-      }
+      await sleep(50);
+      clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
+      for (let i = 0; i < 25 && !input; i++) { await sleep(40); input = inputFor(files); }
     }
     if (!input) return false;
     const dt = new DataTransfer();
