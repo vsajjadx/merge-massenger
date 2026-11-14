@@ -146,17 +146,14 @@ if (/whatsapp/i.test(location.hostname)) {
       return score(b) - score(a);
     })[0] || null;
   };
-  // Open WhatsApp's attachment menu, choose the matching native input, then assign the dropped FileList.
-  // Setting input.files is accepted by the page's normal change handler and preserves its preview/caption UI.
-  async function attachFiles(files) {
-    let input = inputFor(files);
-    if (!input) {
-      // Do not open WhatsApp's + menu here. Forward the real local paths to the main process, which performs a
-      // direct browser drag on the open chat. This keeps drag-and-drop separate from the manual attachment menu.
-      const paths = pathsFor(files);
-      if (paths.length) ipcRenderer.send('um:wa-drop-direct', paths);
-      return paths.length > 0;
-    }
+  const clickButton = (label) => {
+    const wanted = String(label).trim().toLowerCase();
+    const el = [...document.querySelectorAll('button, [role="button"], [role="menuitem"]')]
+      .find((item) => String(item.getAttribute('aria-label') || item.textContent || '').trim().toLowerCase() === wanted);
+    if (!el) return false;
+    try { el.click(); return true; } catch { return false; }
+  };
+  const assignFiles = (input, files) => {
     if (!input) return false;
     const dt = new DataTransfer();
     for (const file of files) dt.items.add(file);
@@ -166,6 +163,41 @@ if (/whatsapp/i.test(location.hostname)) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
+  };
+  // WhatsApp only creates its document input after the attachment command is selected. Trigger that command
+  // in the page (without sending a native click through the window) and keep the short-lived menu invisible.
+  // The normal input/change handler then opens the native preview on the very first user drop.
+  async function inputFromMenu(files) {
+    if (!clickButton('Attach')) return null;
+    const shield = document.createElement('style');
+    shield.textContent = '[role="menu"], [role="menuitem"] { visibility: hidden !important; }';
+    (document.head || document.documentElement).appendChild(shield);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
+      let input = inputFor(files);
+      for (let i = 0; i < 36 && !input; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        input = inputFor(files);
+      }
+      return input;
+    } finally { shield.remove(); }
+  }
+
+  // Assign the dropped FileList to WhatsApp's own input. This preserves its preview/caption UI and avoids
+  // redispatching an untrusted DOM DragEvent.
+  async function attachFiles(files) {
+    let input = inputFor(files);
+    if (!input) {
+      input = await inputFromMenu(files);
+    }
+    if (assignFiles(input, files)) return true;
+
+    // Last-resort path for a WhatsApp build that does not expose its attachment menu/input to the page.
+    // This still never opens the + menu visibly; the main process performs a browser-level drop instead.
+    const paths = pathsFor(files);
+    if (paths.length) ipcRenderer.send('um:wa-drop-direct', paths);
+    return paths.length > 0;
   }
 
 }
