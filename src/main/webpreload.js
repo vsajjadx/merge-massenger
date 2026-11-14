@@ -168,11 +168,12 @@ if (/whatsapp/i.test(location.hostname)) {
   // in the page (without sending a native click through the window) and keep the short-lived menu invisible.
   // The normal input/change handler then opens the native preview on the very first user drop.
   async function inputFromMenu(files) {
-    if (!clickButton('Attach')) return null;
+    if (typeof document.createElement !== 'function') return null;
     const shield = document.createElement('style');
-    shield.textContent = '[role="menu"], [role="menuitem"] { visibility: hidden !important; }';
+    shield.textContent = '[role="menu"], [role="menuitem"], [aria-label="Photos & videos"], [aria-label="Document"] { visibility: hidden !important; }';
     (document.head || document.documentElement).appendChild(shield);
     try {
+      if (!clickButton('Attach')) return null;
       await new Promise((resolve) => setTimeout(resolve, 30));
       clickButton(isMedia(files) ? 'Photos & videos' : 'Document');
       let input = inputFor(files);
