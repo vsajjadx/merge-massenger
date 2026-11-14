@@ -172,6 +172,14 @@ if (/whatsapp/i.test(location.hostname)) {
     const shield = document.createElement('style');
     shield.textContent = '[role="menu"], [role="menuitem"], [aria-label="Photos & videos"], [aria-label="Document"] { visibility: hidden !important; }';
     (document.head || document.documentElement).appendChild(shield);
+    // Selecting WhatsApp's Document command normally calls input.click(), which opens a native Windows
+    // file picker. The dropped File objects are already in hand, so suppress only that picker activation;
+    // the subsequent change event is still delivered to WhatsApp's own input below.
+    const stopPicker = (event) => {
+      const target = event.target;
+      if (target?.tagName === 'INPUT' && String(target.type).toLowerCase() === 'file') event.preventDefault();
+    };
+    for (const type of ['pointerdown', 'mousedown', 'click']) document.addEventListener(type, stopPicker, true);
     try {
       if (!clickButton('Attach')) return null;
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -182,7 +190,10 @@ if (/whatsapp/i.test(location.hostname)) {
         input = inputFor(files);
       }
       return input;
-    } finally { shield.remove(); }
+    } finally {
+      for (const type of ['pointerdown', 'mousedown', 'click']) document.removeEventListener(type, stopPicker, true);
+      shield.remove();
+    }
   }
 
   // Assign the dropped FileList to WhatsApp's own input. This preserves its preview/caption UI and avoids
